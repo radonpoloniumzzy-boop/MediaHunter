@@ -3,13 +3,15 @@ import { randomUUID } from "node:crypto";
 import type { SessionRepository } from "../repositories/session-repository";
 import type { RequestRepository } from "../repositories/request-repository";
 
-import { createRequirementProgress, runWorkflow, type WorkflowRuntimeOptions } from "@lan-ting/workflow";
+import { createRequirementProgress } from "@lan-ting/workflow";
+
+import type { AnalysisWorkflowAdapter } from "../external-adapters";
 
 export class PipelineService {
   constructor(
     private readonly sessions: SessionRepository,
     private readonly requests: RequestRepository,
-    private readonly runtime: WorkflowRuntimeOptions
+    private readonly analysisWorkflow: AnalysisWorkflowAdapter
   ) {}
 
   async createSession(title?: string) {
@@ -49,7 +51,7 @@ export class PipelineService {
       await this.requests.createRequest(sessionId, progress.requirementDoc);
 
       try {
-        const result = await runWorkflow(progress.requirementDoc, this.runtime);
+        const result = await this.analysisWorkflow.run(progress.requirementDoc);
         await this.requests.persistWorkflowResult(requestId, result);
         workflowStatus = result.status;
 
@@ -95,7 +97,7 @@ export class PipelineService {
       retried_at: new Date().toISOString()
     });
 
-    const result = await runWorkflow(request.requirement_doc, this.runtime);
+    const result = await this.analysisWorkflow.run(request.requirement_doc);
     await this.requests.persistWorkflowResult(requestId, result);
     return result;
   }

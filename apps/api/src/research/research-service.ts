@@ -3,6 +3,7 @@ import { hasPermission, type Permission } from "./permissions";
 import { evaluateRules } from "./risk-engine";
 import { detectFetchFailure, extractArticleLinksFromHtml, hashContent, parseWeChatArticleHtml } from "./wechat-parser";
 import type { AppEnv } from "../env";
+import type { PublicWebAdapter } from "../external-adapters";
 import type { AuthUser, ArticleListFilters } from "./types";
 import { ResearchRepository, type TaskItemClaim } from "./research-repository";
 
@@ -135,7 +136,8 @@ type ExportRecord = {
 export class ResearchService {
   constructor(
     public readonly repo: ResearchRepository,
-    private readonly env: AppEnv
+    private readonly env: AppEnv,
+    private readonly publicWeb: PublicWebAdapter
   ) {}
 
   async login(username: string, password: string) {
@@ -464,20 +466,6 @@ export class ResearchService {
     return result.content;
   }
 
-  private async fetchHtml(url: string) {
-    const response = await fetch(url, {
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-      }
-    });
-    const html = await response.text();
-    return {
-      status: response.status,
-      html
-    };
-  }
-
   async processClaimedTaskItem(claim: TaskItemClaim) {
     const activeRules = (await this.repo.getActiveRules()).map((row) => ({
       id: String(row.id),
@@ -492,7 +480,7 @@ export class ResearchService {
     }
 
     if (claim.entry_url) {
-      const entry = await this.fetchHtml(claim.entry_url);
+      const entry = await this.publicWeb.fetchPage(claim.entry_url);
       const entryFailure = detectFetchFailure(entry.html, entry.status);
       if (entryFailure) {
         throw new Error(entryFailure === "解析失败" ? "页面失效" : entryFailure);
@@ -518,7 +506,7 @@ export class ResearchService {
 
     for (const url of urls) {
       await sleep(800 + Math.floor(Math.random() * 700));
-      const page = await this.fetchHtml(url);
+      const page = await this.publicWeb.fetchPage(url);
       const failure = detectFetchFailure(page.html, page.status);
       if (failure) {
         throw new Error(failure);

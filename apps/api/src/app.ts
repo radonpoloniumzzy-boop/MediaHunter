@@ -3,16 +3,21 @@ import cors from "@fastify/cors";
 
 import type { PipelineService } from "./services/pipeline-service";
 import type { IncubationService } from "./incubation/service";
-import { ResearchService } from "./research/research-service";
+import type { ResearchService } from "./research/research-service";
 import { registerChatRoutes } from "./routes/chat-routes";
 import { registerIncubationRoutes } from "./routes/incubation-routes";
 import { registerPublishRoutes } from "./routes/publish-routes";
 import { registerRequestRoutes } from "./routes/request-routes";
 import { registerResearchRoutes } from "./routes/research-routes";
 
-export async function createApp(pipeline: PipelineService, research: ResearchService, incubation?: IncubationService) {
+export async function createApp(
+  pipeline: PipelineService,
+  research: ResearchService,
+  incubation?: IncubationService,
+  options?: { logger?: boolean }
+) {
   const app = Fastify({
-    logger: true
+    logger: options?.logger ?? true
   });
 
   await app.register(cors, {

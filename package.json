@@ -15,10 +15,13 @@
     "local:postgres": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-postgres.ps1",
     "local:stop": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-local-all.ps1",
     "build": "corepack pnpm --filter @lan-ting/web build && corepack pnpm --filter @lan-ting/api typecheck && corepack pnpm --filter @lan-ting/workflow typecheck && corepack pnpm --filter @lan-ting/rag typecheck && corepack pnpm --filter @lan-ting/prompts typecheck",
-    "test": "vitest run",
-    "typecheck": "corepack pnpm -r typecheck"
+    "test": "vitest run --config vitest.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "corepack pnpm -r typecheck",
+    "verify": "corepack pnpm test && corepack pnpm test:integration && corepack pnpm typecheck && corepack pnpm build"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^24.0.0",
     "typescript": "^5.8.2",
     "vitest": "^3.1.1"
