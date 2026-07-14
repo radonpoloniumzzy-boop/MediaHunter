@@ -23,6 +23,13 @@ export interface AuthUser {
 
 export type AnyRecord = Record<string, unknown>;
 
+export interface ResearchProjectDetail {
+  project: AnyRecord & { id: string; name: string; raw_request: string; status: string; current_brief_version: number };
+  brief: AnyRecord & { id: string; version: number; brief: AnyRecord; open_questions: Array<{ key: string; prompt: string; reason: string }> };
+  versions: AnyRecord[];
+  confirmations: AnyRecord[];
+}
+
 export interface DashboardSummary {
   tracks: AnyRecord;
   assets: AnyRecord;
@@ -170,4 +177,44 @@ export async function downloadExport(
   anchor.click();
   anchor.remove();
   window.URL.revokeObjectURL(url);
+}
+
+export function listResearchProjects(token: string) {
+  return apiFetch<{ items: ResearchProjectDetail["project"][] }>("/research-projects", token);
+}
+
+export function getResearchProject(token: string, id: string) {
+  return apiFetch<ResearchProjectDetail>(`/research-projects/${id}`, token);
+}
+
+export function createResearchProject(token: string, rawRequest: string) {
+  return apiFetch<ResearchProjectDetail>("/research-projects", token, {
+    method: "POST",
+    body: JSON.stringify({ raw_request: rawRequest, intake_source: "web" })
+  });
+}
+
+export function answerResearchProjectQuestion(token: string, id: string, questionKey: string, answer: string) {
+  return apiFetch<ResearchProjectDetail>(`/research-projects/${id}/answers`, token, {
+    method: "POST",
+    body: JSON.stringify({ question_key: questionKey, answer })
+  });
+}
+
+export function reviseResearchProjectBrief(token: string, id: string, patch: AnyRecord) {
+  return apiFetch<ResearchProjectDetail>(`/research-projects/${id}/brief`, token, {
+    method: "PUT",
+    body: JSON.stringify({ patch, note: "web_revision" })
+  });
+}
+
+export function confirmResearchProjectBrief(token: string, id: string) {
+  return apiFetch<ResearchProjectDetail>(`/research-projects/${id}/confirm`, token, {
+    method: "POST",
+    body: JSON.stringify({ note: "confirmed_in_workspace" })
+  });
+}
+
+export function startResearchProject(token: string, id: string) {
+  return apiFetch<{ id: string; status: string }>(`/research-projects/${id}/start`, token, { method: "POST" });
 }

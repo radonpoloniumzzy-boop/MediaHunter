@@ -38,18 +38,27 @@ import {
   type AuthUser,
   type DashboardSummary,
   type IncubationEntity,
+  type ResearchProjectDetail,
+  answerResearchProjectQuestion,
+  confirmResearchProjectBrief,
+  createResearchProject,
   downloadExport,
+  getResearchProject,
   getDashboard,
   importEntity,
   listEntity,
+  listResearchProjects,
   login,
   logout,
   me,
   saveEntity,
+  reviseResearchProjectBrief,
+  startResearchProject,
   suggestTopics,
   suggestTrackScore
 } from "./api";
 import type { LucideIcon } from "lucide-react";
+import { getProjectActionState } from "./project-workspace-state";
 
 const TOKEN_KEY = "incubation_token";
 const fmtDate = (value?: unknown) => {
@@ -750,6 +759,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage token={token} />} />
+        <Route path="/research-projects" element={<ResearchProjectsPage token={token} />} />
         {MODULES.map((module) => (
           <Route key={module.route} path={module.route} element={<ModulePage token={token} config={module} />} />
         ))}
@@ -823,6 +833,7 @@ function LoginPage({ onLogin }: { onLogin: (token: string, user: AuthUser) => vo
 function Shell({ user, onLogout, children }: { user: AuthUser; onLogout: () => void; children: ReactNode }) {
   const nav = [
     { to: "/dashboard", label: "Dashboard", icon: Home },
+    { to: "/research-projects", label: "专项调研", icon: BriefcaseBusiness },
     ...MODULES.map((module) => ({ to: module.route, label: module.navLabel, icon: module.icon })),
     { to: "/exports", label: "导出中心", icon: Download },
     { to: "/settings", label: "系统设置", icon: Settings }
@@ -1266,6 +1277,175 @@ function ModulePage({ token, config }: { token: string; config: ModuleConfig }) 
         onClose={() => setSelected(null)}
         onPrimaryAction={selected ? () => void runPrimaryAction(selected) : undefined}
       />
+    </div>
+  );
+}
+
+function ResearchProjectsPage({ token }: { token: string }) {
+  const [projects, setProjects] = useState<ResearchProjectDetail["project"][]>([]);
+  const [selected, setSelected] = useState<ResearchProjectDetail | null>(null);
+  const [request, setRequest] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [briefForm, setBriefForm] = useState<AnyRecord>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const actionState = selected
+    ? getProjectActionState(selected.project.status, selected.brief.open_questions.length)
+    : { canConfirm: false, canStart: false };
+
+  const loadProjects = async () => {
+    const result = await listResearchProjects(token);
+    setProjects(result.items);
+    if (!selected && result.items[0]) await selectProject(result.items[0].id);
+  };
+  const selectProject = async (id: string) => {
+    const detail = await getResearchProject(token, id);
+    setSelected(detail);
+    const brief = detail.brief.brief;
+    setBriefForm({
+      business_context: brief.business_context ?? "",
+      change_event: brief.change_event ?? "",
+      target_audience: brief.target_audience ?? "",
+      communication_goal: brief.communication_goal ?? "",
+      constraints: Array.isArray(brief.constraints) ? brief.constraints.join("\n") : "",
+      deliverables: Array.isArray(brief.deliverables) ? brief.deliverables.join("\n") : ""
+    });
+  };
+
+  useEffect(() => {
+    void loadProjects().catch((caught) => setError(caughtMessage(caught, "项目加载失败")));
+  }, [token]);
+
+  const run = async (action: () => Promise<ResearchProjectDetail>) => {
+    try {
+      setBusy(true);
+      setError(null);
+      const detail = await action();
+      setSelected(detail);
+      await loadProjects();
+      await selectProject(detail.project.id);
+    } catch (caught) {
+      setError(caughtMessage(caught, "操作失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="page-stack">
+      <header className="hero-header compact-hero">
+        <div>
+          <p>Research Projects</p>
+          <h1>专项调研</h1>
+          <span>Project Brief、确认记录与研究启动状态</span>
+        </div>
+      </header>
+
+      <section className="project-intake panel">
+        <div className="section-title">
+          <h2><Plus size={18} /> 新建项目</h2>
+        </div>
+        <textarea value={request} onChange={(event) => setRequest(event.target.value)} placeholder="输入客户背景、业务变化和希望解决的问题" />
+        <button
+          className="primary-button"
+          disabled={busy || request.trim().length < 10}
+          onClick={() => void run(async () => {
+            const detail = await createResearchProject(token, request);
+            setRequest("");
+            return detail;
+          })}
+        >
+          <Sparkles size={16} /> 整理为 Project Brief
+        </button>
+      </section>
+
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      <div className="project-workspace">
+        <aside className="panel project-list">
+          <div className="section-title"><h2>项目列表</h2><span>{projects.length}</span></div>
+          {projects.map((project) => (
+            <button key={project.id} className={selected?.project.id === project.id ? "project-row active" : "project-row"} onClick={() => void selectProject(project.id)}>
+              <strong>{project.name}</strong>
+              <span>{statusLabels[project.status] ?? project.status} · v{project.current_brief_version}</span>
+            </button>
+          ))}
+          {!projects.length ? <p className="muted">暂无专项调研项目</p> : null}
+        </aside>
+
+        <section className="project-detail">
+          {!selected ? <div className="panel"><p className="muted">选择一个项目查看 Brief</p></div> : (
+            <>
+              <div className="panel project-summary">
+                <div className="section-title">
+                  <div><h2>{selected.project.name}</h2><span>{selected.project.status}</span></div>
+                  <span className="status-pill green">v{selected.brief.version}</span>
+                </div>
+                <p>{selected.project.raw_request}</p>
+              </div>
+
+              {selected.brief.open_questions.length ? (
+                <div className="panel question-list">
+                  <div className="section-title"><h2>关键缺口</h2><span>{selected.brief.open_questions.length}</span></div>
+                  {selected.brief.open_questions.map((question) => (
+                    <div className="question-row" key={question.key}>
+                      <div><strong>{question.prompt}</strong><span>{question.reason}</span></div>
+                      <input value={answers[question.key] ?? ""} onChange={(event) => setAnswers({ ...answers, [question.key]: event.target.value })} />
+                      <button className="ghost-button" disabled={busy || !(answers[question.key] ?? "").trim()} onClick={() => void run(() => answerResearchProjectQuestion(token, selected.project.id, question.key, answers[question.key]))}>
+                        <CheckCircle2 size={16} /> 提交答案
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="panel brief-editor">
+                <div className="section-title"><h2>Project Brief</h2><span>{selected.versions.length} 个版本</span></div>
+                {[
+                  ["business_context", "业务背景"], ["change_event", "变化事件"],
+                  ["target_audience", "目标受众"], ["communication_goal", "传播目标"],
+                  ["constraints", "限制条件"], ["deliverables", "交付物"]
+                ].map(([key, label]) => (
+                  <label key={key}>{label}<textarea value={String(briefForm[key] ?? "")} onChange={(event) => setBriefForm({ ...briefForm, [key]: event.target.value })} /></label>
+                ))}
+                <div className="form-actions">
+                  <button className="ghost-button" disabled={busy} onClick={() => void run(() => reviseResearchProjectBrief(token, selected.project.id, {
+                    ...briefForm,
+                    constraints: String(briefForm.constraints ?? "").split("\n").filter(Boolean),
+                    deliverables: String(briefForm.deliverables ?? "").split("\n").filter(Boolean)
+                  }))}><RefreshCw size={16} /> 保存新版本</button>
+                  <button className="primary-button" disabled={busy || !actionState.canConfirm} onClick={() => void run(() => confirmResearchProjectBrief(token, selected.project.id))}>
+                    <CheckCircle2 size={16} /> 确认 Brief
+                  </button>
+                  <button className="primary-button" disabled={busy || !actionState.canStart} onClick={async () => {
+                    try { setBusy(true); await startResearchProject(token, selected.project.id); await selectProject(selected.project.id); await loadProjects(); }
+                    catch (caught) { setError(caughtMessage(caught, "启动失败")); } finally { setBusy(false); }
+                  }}><Search size={16} /> 启动研究</button>
+                </div>
+              </div>
+
+              <div className="panel project-history">
+                <div className="section-title"><h2>版本与确认记录</h2><span>{selected.confirmations.length} 次确认</span></div>
+                <div className="history-list">
+                  {selected.versions.map((version) => (
+                    <div className="history-row" key={String(version.id)}>
+                      <strong>Brief v{String(version.version)}</strong>
+                      <span>{String(version.change_note ?? "简报更新")}</span>
+                      <time>{fmtDate(version.created_at)}</time>
+                    </div>
+                  ))}
+                  {selected.confirmations.map((confirmation) => (
+                    <div className="history-row confirmed" key={String(confirmation.id)}>
+                      <strong>已确认 v{String(confirmation.brief_version ?? selected.brief.version)}</strong>
+                      <span>{String(confirmation.note ?? "确认用于启动专项研究")}</span>
+                      <time>{fmtDate(confirmation.confirmed_at)}</time>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

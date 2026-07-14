@@ -466,6 +466,44 @@ export async function ensureSchema(sql: Sql): Promise<void> {
       removed_at timestamptz not null default now()
     );
 
+    create table if not exists research_project (
+      id text primary key,
+      name text not null,
+      raw_request text not null,
+      intake_source text not null default 'web',
+      status text not null default 'brief_draft',
+      research_profile text not null default 'standard',
+      current_brief_version integer not null default 1,
+      created_by text references users(id) on delete set null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create table if not exists project_brief_version (
+      id text primary key,
+      project_id text not null references research_project(id) on delete cascade,
+      version integer not null,
+      brief jsonb not null,
+      open_questions jsonb not null default '[]'::jsonb,
+      change_note text,
+      created_by text references users(id) on delete set null,
+      created_at timestamptz not null default now(),
+      unique(project_id, version)
+    );
+
+    create table if not exists project_brief_confirmation (
+      id text primary key,
+      project_id text not null references research_project(id) on delete cascade,
+      brief_version_id text not null references project_brief_version(id) on delete cascade,
+      confirmed_by text references users(id) on delete set null,
+      note text,
+      confirmed_at timestamptz not null default now()
+    );
+
+    create index if not exists idx_research_project_status on research_project(status, updated_at desc);
+    create index if not exists idx_project_brief_project on project_brief_version(project_id, version desc);
+    create unique index if not exists idx_project_brief_confirmation_version on project_brief_confirmation(brief_version_id);
+
     alter table article add column if not exists content_article_id text references content_article(id) on delete set null;
     alter table content_snapshot add column if not exists has_video boolean not null default false;
     alter table content_snapshot add column if not exists has_audio boolean not null default false;

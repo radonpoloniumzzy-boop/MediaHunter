@@ -534,6 +534,108 @@ describe("MediaHunter application", () => {
     expect(items[0]?.error_message).toBeTruthy();
   });
 
+  it("versions, confirms, and gates a research project brief", async () => {
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research-projects",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { raw_request: "为一家企业规划公众号品牌宣传内容，希望提升品牌认知。" }
+    });
+    expect(created.statusCode).toBe(201);
+    const createdBody = created.json<{
+      project: { id: string; raw_request: string; status: string };
+      brief: { version: number; open_questions: Array<{ key: string }> };
+    }>();
+    const projectId = createdBody.project.id;
+    expect(createdBody.project.raw_request).toContain("公众号品牌宣传");
+    expect(createdBody.brief.open_questions.map((question) => question.key)).toEqual(["change_event", "target_audience"]);
+
+    const blockedStart = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/start`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(blockedStart.statusCode).toBe(409);
+    const blockedConfirm = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/confirm`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {}
+    });
+    expect(blockedConfirm.statusCode).toBe(409);
+
+    for (const [question_key, answer] of [
+      ["change_event", "公司将发布新的量化基金产品"],
+      ["target_audience", "现有投资人与潜在高净值客户"]
+    ]) {
+      const response = await runtime.app.inject({
+        method: "POST",
+        url: `/api/research-projects/${projectId}/answers`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { question_key, answer }
+      });
+      expect(response.statusCode).toBe(200);
+    }
+
+    const revised = await runtime.app.inject({
+      method: "PUT",
+      url: `/api/research-projects/${projectId}/brief`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { patch: { constraints: ["不得承诺收益", "仅使用公开资料"] }, note: "compliance constraints" }
+    });
+    const revisedBody = revised.json<{ brief: { version: number; open_questions: unknown[] }; versions: unknown[] }>();
+    expect(revisedBody.brief.version).toBe(4);
+    expect(revisedBody.brief.open_questions).toEqual([]);
+    expect(revisedBody.versions).toHaveLength(4);
+
+    const confirmed = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/confirm`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { note: "approved brief" }
+    });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json<{ project: { status: string }; confirmations: unknown[] }>().project.status).toBe("brief_confirmed");
+    expect(confirmed.json<{ confirmations: unknown[] }>().confirmations).toHaveLength(1);
+
+    const confirmedAgain = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/confirm`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {}
+    });
+    expect(confirmedAgain.statusCode).toBe(200);
+    expect(confirmedAgain.json<{ confirmations: unknown[] }>().confirmations).toHaveLength(1);
+
+    const started = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/start`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(started.statusCode).toBe(200);
+    expect(started.json<{ status: string }>().status).toBe("research_ready");
+
+    const startedAgain = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/start`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(startedAgain.statusCode).toBe(200);
+    expect(startedAgain.json<{ status: string }>().status).toBe("research_ready");
+
+    const skillCreated = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research-projects",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        intake_source: "skill",
+        raw_request: "为私募基金新发行的量化产品做品牌宣传，目的是告诉投资人公司新增量化团队和产品，并寻找对标账号。"
+      }
+    });
+    expect(skillCreated.statusCode).toBe(201);
+    expect(skillCreated.json<{ project: { intake_source: string } }>().project.intake_source).toBe("skill");
+  });
+
   it("returns an explicit not-configured browser discovery result", async () => {
     await expect(runtime.adapters.browserDiscovery.discover({ query: "quantitative fund accounts" })).resolves.toEqual({
       status: "not_configured",

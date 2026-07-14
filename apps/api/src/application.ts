@@ -21,6 +21,8 @@ import { SessionRepository } from "./repositories/session-repository";
 import { ResearchRepository } from "./research/research-repository";
 import { ResearchService } from "./research/research-service";
 import { PipelineService } from "./services/pipeline-service";
+import { ProjectRepository } from "./projects/repository";
+import { ProjectService } from "./projects/service";
 
 export interface ApplicationAdapters {
   publicWeb: PublicWebAdapter;
@@ -33,6 +35,7 @@ export interface ApplicationServices {
   research: ResearchService;
   incubation: IncubationService;
   content: ContentService;
+  projects: ProjectService;
 }
 
 export interface ServiceContainer {
@@ -76,11 +79,13 @@ export async function createServiceContainer(options: CreateApplicationOptions):
     const contentRepo = new ContentRepository(sql);
     const legacyContentMigrator = new LegacyContentMigrator(sql, contentRepo);
     const incubationRepo = new IncubationRepository(sql);
+    const projectRepo = new ProjectRepository(sql);
     const services: ApplicationServices = {
       pipeline: new PipelineService(sessions, requests, adapters.analysisWorkflow),
       research: new ResearchService(researchRepo, options.env, adapters.publicWeb, contentRepo),
       incubation: new IncubationService(incubationRepo),
-      content: new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator)
+      content: new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator),
+      projects: new ProjectService(projectRepo)
     };
 
     return {
@@ -107,6 +112,7 @@ export async function createApplication(options: CreateApplicationOptions): Prom
       container.services.research,
       container.services.incubation,
       container.services.content,
+      container.services.projects,
       { logger: options.logger ?? true }
     );
     app.addHook("onClose", async () => {

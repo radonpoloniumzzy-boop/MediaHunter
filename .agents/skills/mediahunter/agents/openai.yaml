@@ -1,0 +1,4 @@
+interface:
+  display_name: "MediaHunter"
+  short_description: "统一处理公众号每日情报、每周运营方案和客户专项调研流程"
+  default_prompt: "使用 $mediahunter 整理这个公众号研究需求并进入正确工作流。"

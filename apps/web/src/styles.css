@@ -960,6 +960,125 @@ label {
   color: #0ba66a;
 }
 
+.project-intake {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.project-intake .section-title {
+  grid-column: 1 / -1;
+}
+
+.project-intake textarea {
+  min-height: 92px;
+}
+
+.project-workspace {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.project-list,
+.project-detail,
+.question-list,
+.brief-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.project-row {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  border: 1px solid #e1e7f0;
+  border-radius: 6px;
+  padding: 11px;
+  color: #172033;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-row.active {
+  border-color: #4677e8;
+  background: #f2f6ff;
+}
+
+.project-row span,
+.project-summary p,
+.question-row span {
+  color: #65758d;
+  font-size: 12px;
+}
+
+.project-summary p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.question-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf1f7;
+}
+
+.question-row > div,
+.brief-editor label {
+  display: grid;
+  gap: 6px;
+}
+
+.brief-editor {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.brief-editor .section-title,
+.brief-editor .form-actions {
+  grid-column: 1 / -1;
+}
+
+.brief-editor label {
+  color: #4b5870;
+  font-size: 13px;
+}
+
+.brief-editor textarea {
+  min-height: 88px;
+}
+
+.project-history,
+.history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #edf1f7;
+  color: #65758d;
+  font-size: 12px;
+}
+
+.history-row strong {
+  color: #172033;
+}
+
+.history-row.confirmed strong {
+  color: #23745b;
+}
+
 @media (max-width: 1280px) {
   .kpi-grid,
   .module-metrics {
@@ -972,7 +1091,8 @@ label {
 
   .workspace-grid,
   .export-panel,
-  .trend-panel {
+  .trend-panel,
+  .project-workspace {
     grid-template-columns: 1fr;
   }
 }
@@ -989,6 +1109,12 @@ label {
 
   .main-panel {
     padding: 16px;
+  }
+
+  .question-row,
+  .brief-editor,
+  .history-row {
+    grid-template-columns: 1fr;
   }
 
   .topbar,
@@ -1023,6 +1149,18 @@ label {
 
   .toolbar-left input {
     width: 100%;
+  }
+
+  .project-intake,
+  .question-row,
+  .brief-editor {
+    grid-template-columns: 1fr;
+  }
+
+  .project-intake .section-title,
+  .brief-editor .section-title,
+  .brief-editor .form-actions {
+    grid-column: auto;
   }
 }
 
