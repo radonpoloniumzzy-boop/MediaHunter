@@ -784,6 +784,7 @@ export class ResearchRepository {
   }
 
   async upsertArticleRecord(input: {
+    content_article_id: string;
     source_id: string | null;
     source_name: string | null;
     source_category: string | null;
@@ -807,7 +808,8 @@ export class ResearchRepository {
       const nextVersion = Number(direct.snapshot_version ?? 0) + 1;
       await this.sql`
         update article
-        set source_id = ${input.source_id},
+        set content_article_id = ${input.content_article_id},
+            source_id = ${input.source_id},
             source_name = ${input.source_name},
             title = ${input.snapshot.title},
             publish_time = ${publishTime},
@@ -850,7 +852,8 @@ export class ResearchRepository {
       const nextVersion = Number(byTitlePublish.snapshot_version ?? 0) + 1;
       await this.sql`
         update article
-        set article_url = ${input.article_url},
+        set content_article_id = ${input.content_article_id},
+            article_url = ${input.article_url},
             crawl_time = now(),
             content_html = ${input.snapshot.content_html},
             content_text = ${input.snapshot.content_text},
@@ -880,6 +883,7 @@ export class ResearchRepository {
     await this.sql`
       insert into article (
         id,
+        content_article_id,
         source_id,
         source_name,
         title,
@@ -907,6 +911,7 @@ export class ResearchRepository {
       )
       values (
         ${articleId},
+        ${input.content_article_id},
         ${input.source_id},
         ${input.source_name},
         ${input.snapshot.title},
@@ -1021,17 +1026,14 @@ export class ResearchRepository {
           a.review_status,
           a.column_type,
           a.updated_at::text,
-          coalesce(
-            json_agg(
-              json_build_object('id', td.id, 'dimension', td.dimension, 'label', td.label, 'value', td.value)
-            ) filter (where td.id is not null),
-            '[]'::json
-          ) as tags
-        from article a
-        left join article_tag_relation atr on atr.article_id = a.id
-        left join tag_dictionary td on td.id = atr.tag_id
+          coalesce((
+            select json_agg(json_build_object('id', td.id, 'dimension', td.dimension, 'label', td.label, 'value', td.value))
+            from article_tag_relation atr
+            join tag_dictionary td on td.id = atr.tag_id
+            where atr.article_id = a.id
+          ), '[]'::json) as tags
+        from article_library_view a
         where ${clauses.join(" and ")}
-        group by a.id
         order by ${orderClause}
         limit ${limitSlot}
         offset ${offsetSlot}
@@ -1072,7 +1074,7 @@ export class ResearchRepository {
     const rows = await this.sql.unsafe<Record<string, unknown>[]>(
       `
         select count(*)::int as total
-        from article a
+        from article_library_view a
         where ${clauses.join(" and ")}
       `,
       params as never[]
@@ -1174,7 +1176,7 @@ export class ResearchRepository {
             join risk_rule rr on rr.id = h.rule_id
             where h.article_id = a.id
           ), '[]'::json) as hits
-        from article a
+        from article_library_view a
         where ${clauses.join(" and ")}
         order by a.publish_time desc nulls last, a.updated_at desc
         limit ${limitSlot}
@@ -1192,26 +1194,24 @@ export class ResearchRepository {
         a.crawl_time::text as crawl_time_text,
         a.created_at::text as created_at_text,
         a.updated_at::text as updated_at_text,
-        coalesce(
-          json_agg(
-            json_build_object('id', td.id, 'dimension', td.dimension, 'label', td.label, 'value', td.value)
-          ) filter (where td.id is not null),
-          '[]'::json
-        ) as tags
-      from article a
-      left join article_tag_relation atr on atr.article_id = a.id
-      left join tag_dictionary td on td.id = atr.tag_id
+        coalesce((
+          select json_agg(json_build_object('id', td.id, 'dimension', td.dimension, 'label', td.label, 'value', td.value))
+          from article_tag_relation atr
+          join tag_dictionary td on td.id = atr.tag_id
+          where atr.article_id = a.id
+        ), '[]'::json) as tags
+      from article_library_view a
       where a.id = ${articleId}
-      group by a.id
       limit 1
     `;
     if (!articleRows[0]) return null;
 
     const snapshotRows = await this.sql<Record<string, unknown>[]>`
-      select id, version, content_hash, captured_at::text
-      from article_snapshot
-      where article_id = ${articleId}
-      order by version desc
+      select cs.id, cs.version, cs.content_hash, cs.captured_at::text
+      from article a
+      join content_snapshot cs on cs.article_id = a.content_article_id
+      where a.id = ${articleId}
+      order by cs.version desc
     `;
     const reviewRows = await this.sql<Record<string, unknown>[]>`
       select
@@ -1320,21 +1320,67 @@ export class ResearchRepository {
       return { deleted_count: 0 };
     }
 
-    await this.sql`delete from article_tag_relation where article_id = any(${articleIds})`;
-    await this.sql`delete from article_review where article_id = any(${articleIds})`;
-    await this.sql`delete from risk_rule_hit where article_id = any(${articleIds})`;
-    await this.sql`delete from article_snapshot where article_id = any(${articleIds})`;
-    await this.sql`
-      delete from operation_log
-      where target_type = ${"article"}
-        and target_id = any(${articleIds})
-    `;
+    const rows = await this.sql.begin(async (transaction) => {
+      const tx = transaction as unknown as Sql;
+      const removableContent = await tx<Record<string, unknown>[]>`
+        select distinct
+          ca.id,
+          ca.canonical_url,
+          a.source_name,
+          ca.title,
+          ca.current_content_hash
+        from article a
+        join content_article ca on ca.id = a.content_article_id
+        where a.id = any(${articleIds})
+          and not exists (
+            select 1 from article remaining
+            where remaining.content_article_id = ca.id
+              and not (remaining.id = any(${articleIds}))
+          )
+      `;
+      for (const content of removableContent) {
+        await tx`
+          insert into content_source_tombstone (
+            id, content_article_id, canonical_url, source_name, title,
+            last_content_hash, removed_by, reason
+          )
+          values (
+            ${randomUUID()}, ${String(content.id)}, ${String(content.canonical_url)},
+            ${content.source_name ? String(content.source_name) : null}, ${String(content.title)},
+            ${content.current_content_hash ? String(content.current_content_hash) : null},
+            ${user.id}, ${"user_deleted"}
+          )
+          on conflict (content_article_id) do update
+          set removed_by = excluded.removed_by,
+              reason = excluded.reason,
+              removed_at = now()
+        `;
+        await tx`delete from content_snapshot where article_id = ${String(content.id)}`;
+        await tx`
+          update content_article
+          set status = ${"removed"},
+              current_snapshot_version = 0,
+              current_content_hash = null,
+              updated_at = now()
+          where id = ${String(content.id)}
+        `;
+      }
 
-    const rows = await this.sql<Record<string, unknown>[]>`
-      delete from article
-      where id = any(${articleIds})
-      returning id
-    `;
+      await tx`delete from article_tag_relation where article_id = any(${articleIds})`;
+      await tx`delete from article_review where article_id = any(${articleIds})`;
+      await tx`delete from risk_rule_hit where article_id = any(${articleIds})`;
+      await tx`delete from article_snapshot where article_id = any(${articleIds})`;
+      await tx`
+        delete from operation_log
+        where target_type = ${"article"}
+          and target_id = any(${articleIds})
+      `;
+      return tx<Record<string, unknown>[]>`
+        delete from article
+        where id = any(${articleIds})
+        returning id
+      `;
+    });
 
     await this.logOperation(user, "article.delete", "article", null, {
       article_ids: articleIds,

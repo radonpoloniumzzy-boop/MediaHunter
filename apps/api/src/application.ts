@@ -78,7 +78,7 @@ export async function createServiceContainer(options: CreateApplicationOptions):
     const incubationRepo = new IncubationRepository(sql);
     const services: ApplicationServices = {
       pipeline: new PipelineService(sessions, requests, adapters.analysisWorkflow),
-      research: new ResearchService(researchRepo, options.env, adapters.publicWeb),
+      research: new ResearchService(researchRepo, options.env, adapters.publicWeb, contentRepo),
       incubation: new IncubationService(incubationRepo),
       content: new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator)
     };

@@ -454,6 +454,23 @@ export async function ensureSchema(sql: Sql): Promise<void> {
       completed_at timestamptz
     );
 
+    create table if not exists content_source_tombstone (
+      id text primary key,
+      content_article_id text not null unique,
+      canonical_url text not null,
+      source_name text,
+      title text not null,
+      last_content_hash text,
+      removed_by text references users(id) on delete set null,
+      reason text,
+      removed_at timestamptz not null default now()
+    );
+
+    alter table article add column if not exists content_article_id text references content_article(id) on delete set null;
+    alter table content_snapshot add column if not exists has_video boolean not null default false;
+    alter table content_snapshot add column if not exists has_audio boolean not null default false;
+    create index if not exists idx_article_content_article on article(content_article_id);
+
     create index if not exists idx_content_article_source on content_article(source_id, publish_time desc);
     create index if not exists idx_content_article_hash on content_article(current_content_hash);
     create index if not exists idx_content_snapshot_article on content_snapshot(article_id, version desc);
@@ -864,4 +881,67 @@ export async function ensureSchema(sql: Sql): Promise<void> {
   ) {
     await legacyContentMigrator.run();
   }
+  await sql`
+    update article a
+    set content_article_id = l.content_article_id
+    from content_legacy_article_link l
+    where l.legacy_article_id = a.id
+      and a.content_article_id is distinct from l.content_article_id
+  `;
+  await sql`
+    update content_snapshot cs
+    set has_video = a.has_video,
+        has_audio = a.has_audio
+    from content_legacy_snapshot_link l
+    join article_snapshot legacy_snapshot on legacy_snapshot.id = l.legacy_snapshot_id
+    join article a on a.id = legacy_snapshot.article_id
+    where cs.id = l.content_snapshot_id
+      and (cs.has_video is distinct from a.has_video or cs.has_audio is distinct from a.has_audio)
+  `;
+
+  await sql`
+    create or replace view article_library_view as
+    select
+      a.id,
+      a.content_article_id,
+      a.source_id,
+      a.source_name,
+      coalesce(cs.title, a.title) as title,
+      coalesce(ca.canonical_url, a.article_url) as article_url,
+      coalesce(cs.publish_time, a.publish_time) as publish_time,
+      a.crawl_time,
+      coalesce(cs.author, a.author) as author,
+      coalesce(cs.summary, a.summary) as summary,
+      coalesce(cs.cover_url, a.cover_url) as cover_url,
+      a.cover_cached_path,
+      coalesce(cs.content_html, a.content_html) as content_html,
+      coalesce(cs.content_text, a.content_text) as content_text,
+      coalesce((
+        select jsonb_agg(ir.url order by ir.position)
+        from content_image_reference ir
+        where ir.snapshot_id = cs.id and ir.reference_type = 'inline'
+      ), a.images) as images,
+      coalesce(cs.has_video, a.has_video) as has_video,
+      coalesce(cs.has_audio, a.has_audio) as has_audio,
+      coalesce(cs.raw_json, a.raw_json) as raw_json,
+      coalesce(cs.content_hash, a.content_hash) as content_hash,
+      coalesce(ca.current_snapshot_version, a.snapshot_version) as snapshot_version,
+      a.is_duplicate,
+      a.duplicate_of_id,
+      a.fulltext_access_level,
+      a.source_category,
+      a.column_type,
+      a.content_goal,
+      a.title_pattern,
+      a.risk_level,
+      a.usability_level,
+      a.borrow_dimensions,
+      a.review_status,
+      a.created_at,
+      a.updated_at
+    from article a
+    left join content_article ca on ca.id = a.content_article_id and ca.status = 'active'
+    left join content_snapshot cs
+      on cs.article_id = ca.id and cs.version = ca.current_snapshot_version
+  `;
 }

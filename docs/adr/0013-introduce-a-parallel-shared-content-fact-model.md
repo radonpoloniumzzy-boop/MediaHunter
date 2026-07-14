@@ -12,5 +12,6 @@ submission of the same URL and hash reuses the existing snapshot.
 - Public submissions and legacy migration can populate the shared model without duplicating equal
   snapshots.
 - Images are stored as typed, positioned external references; media files are not downloaded.
-- Legacy article and snapshot mappings make migration repeatable and auditable. Migration never
-  modifies or deletes legacy rows, so failed runs can be inspected and safely repeated.
+- Legacy article and snapshot mappings make migration repeatable and auditable. Migration does not
+  change legacy content fields or delete legacy rows; later compatibility work may populate only
+  the shared-content foreign key, so failed runs can still be inspected and safely repeated.

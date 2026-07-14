@@ -164,6 +164,11 @@ export class LegacyContentMigrator {
             set content_article_id = excluded.content_article_id,
                 migrated_at = now()
           `;
+          await this.sql`
+            update article
+            set content_article_id = ${contentArticleId}
+            where id = ${String(legacy.id)}
+          `;
           migratedArticleCount += 1;
         }
       }

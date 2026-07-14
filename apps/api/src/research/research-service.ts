@@ -4,6 +4,8 @@ import { evaluateRules } from "./risk-engine";
 import { detectFetchFailure, extractArticleLinksFromHtml, hashContent, parseWeChatArticleHtml } from "./wechat-parser";
 import type { AppEnv } from "../env";
 import type { PublicWebAdapter } from "../external-adapters";
+import { canonicalizeContentUrl, getWeChatSourceKey } from "../content/canonical-url";
+import type { ContentRepository } from "../content/repository";
 import type { AuthUser, ArticleListFilters } from "./types";
 import { ResearchRepository, type TaskItemClaim } from "./research-repository";
 
@@ -72,6 +74,7 @@ function ratio(numerator: number | null, denominator: number | null): number | n
 }
 
 function classifyError(message: string): "network" | "page" | "parse" | "restricted" | "deleted" | "config" {
+  if (message.includes("CONTENT_TOMBSTONED")) return "config";
   if (message.includes("配置")) return "config";
   if (message.includes("访问受限")) return "restricted";
   if (message.includes("内容删除")) return "deleted";
@@ -137,7 +140,8 @@ export class ResearchService {
   constructor(
     public readonly repo: ResearchRepository,
     private readonly env: AppEnv,
-    private readonly publicWeb: PublicWebAdapter
+    private readonly publicWeb: PublicWebAdapter,
+    private readonly content: ContentRepository
   ) {}
 
   async login(username: string, password: string) {
@@ -503,44 +507,68 @@ export class ResearchService {
 
     let articleCount = 0;
     let storedCount = 0;
+    const failures: Array<{ url: string; error_type: string; error_message: string }> = [];
 
     for (const url of urls) {
-      await sleep(800 + Math.floor(Math.random() * 700));
-      const page = await this.publicWeb.fetchPage(url);
-      const failure = detectFetchFailure(page.html, page.status);
-      if (failure) {
-        throw new Error(failure);
-      }
-      const snapshot = parseWeChatArticleHtml(page.html, url);
-      if (cutoff && snapshot.publish_time) {
-        const publishTime = new Date(snapshot.publish_time);
-        if (!Number.isNaN(publishTime.getTime()) && publishTime < cutoff) {
-          articleCount += 1;
-          continue;
+      try {
+        await sleep(800 + Math.floor(Math.random() * 700));
+        const page = await this.publicWeb.fetchPage(url);
+        const failure = detectFetchFailure(page.html, page.status);
+        if (failure) {
+          throw new Error(failure);
         }
-      }
+        const snapshot = parseWeChatArticleHtml(page.html, url);
+        if (cutoff && snapshot.publish_time) {
+          const publishTime = new Date(snapshot.publish_time);
+          if (!Number.isNaN(publishTime.getTime()) && publishTime < cutoff) {
+            articleCount += 1;
+            continue;
+          }
+        }
 
-      const { hits, riskLevel, columnType } = evaluateRules(snapshot.title, snapshot.content_text, activeRules);
-      const contentHash = hashContent(`${snapshot.title}\n${snapshot.content_text}`);
-      await this.repo.upsertArticleRecord({
-        source_id: claim.source_id,
-        source_name: claim.account_name,
-        source_category: null,
-        article_url: url,
-        snapshot,
-        content_hash: contentHash,
-        risk_level: riskLevel,
-        column_type: columnType,
-        hits
-      });
-      articleCount += 1;
-      storedCount += 1;
+        const { hits, riskLevel, columnType } = evaluateRules(snapshot.title, snapshot.content_text, activeRules);
+        const contentHash = hashContent(`${snapshot.title}\n${snapshot.content_text}`);
+        const canonicalUrl = canonicalizeContentUrl(page.finalUrl || url);
+        const shared = await this.content.storeContent({
+          requestedUrl: url,
+          finalUrl: page.finalUrl || url,
+          httpStatus: page.status,
+          canonicalUrl,
+          sourceKey: getWeChatSourceKey(canonicalUrl) ?? (claim.source_id ? `legacy:${claim.source_id}` : null),
+          sourceName: claim.account_name ?? snapshot.author,
+          sourceUrl: claim.entry_url,
+          snapshot,
+          contentHash
+        });
+        await this.repo.upsertArticleRecord({
+          content_article_id: String(shared.article.id),
+          source_id: claim.source_id,
+          source_name: claim.account_name,
+          source_category: null,
+          article_url: url,
+          snapshot,
+          content_hash: contentHash,
+          risk_level: riskLevel,
+          column_type: columnType,
+          hits
+        });
+        articleCount += 1;
+        storedCount += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "网络失败";
+        failures.push({ url, error_type: classifyError(message), error_message: message });
+      }
+    }
+
+    if (!storedCount && failures.length) {
+      throw new Error(failures[0].error_message);
     }
 
     return {
       discovered_count: urls.size,
       article_count: storedCount,
-      scanned_count: articleCount
+      scanned_count: articleCount,
+      failures
     };
   }
 

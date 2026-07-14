@@ -34,6 +34,10 @@ export async function registerContentRoutes(
         reply.code(422);
         return { error: error.message.slice("CONTENT_FETCH_FAILED:".length) };
       }
+      if (error instanceof Error && error.message === "CONTENT_TOMBSTONED") {
+        reply.code(409);
+        return { error: "文章已删除并保留来源墓碑，不能自动恢复正文" };
+      }
       throw error;
     }
   });

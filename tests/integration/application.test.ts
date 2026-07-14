@@ -11,9 +11,11 @@ import type {
 import type { TaskItemClaim } from "../../apps/api/src/research/research-repository";
 
 const ARTICLE_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=1";
+const COLLECTED_ARTICLE_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=collected";
 const TRACKED_ARTICLE_URL = "https://mp.weixin.qq.com/s?scene=9&mid=1&__biz=test";
 const FORBIDDEN_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=403";
 const INVALID_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=invalid";
+const PARTIAL_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=partial";
 
 const ARTICLE_HTML = `
 <!doctype html>
@@ -91,9 +93,15 @@ describe("MediaHunter application", () => {
 
   beforeAll(async () => {
     publicWeb.responses.set(ARTICLE_URL, { status: 200, html: ARTICLE_HTML, finalUrl: ARTICLE_URL });
+    publicWeb.responses.set(COLLECTED_ARTICLE_URL, {
+      status: 200,
+      html: ARTICLE_HTML,
+      finalUrl: COLLECTED_ARTICLE_URL
+    });
     publicWeb.responses.set(TRACKED_ARTICLE_URL, { status: 200, html: ARTICLE_HTML, finalUrl: TRACKED_ARTICLE_URL });
     publicWeb.responses.set(FORBIDDEN_URL, { status: 403, html: "Forbidden", finalUrl: FORBIDDEN_URL });
     publicWeb.responses.set(INVALID_URL, { status: 200, html: "<html>invalid</html>", finalUrl: INVALID_URL });
+    publicWeb.responses.set(PARTIAL_URL, { status: 200, html: ARTICLE_HTML, finalUrl: PARTIAL_URL });
 
     container = await new PostgreSqlContainer("postgres:16-alpine")
       .withDatabase("mediahunter_test")
@@ -221,12 +229,12 @@ describe("MediaHunter application", () => {
   });
 
   it("collects and persists an article through the injected public web adapter", async () => {
-    const claim = await createAndClaimTask(ARTICLE_URL);
+    const claim = await createAndClaimTask(COLLECTED_ARTICLE_URL);
     await runClaim(claim);
 
     const items = await runtime.services.research.repo.listTaskItems(claim.task_id);
     expect(items[0]?.status).toBe("success");
-    expect(publicWeb.requestedUrls).toContain(ARTICLE_URL);
+    expect(publicWeb.requestedUrls).toContain(COLLECTED_ARTICLE_URL);
 
     const articles = await runtime.app.inject({
       method: "GET",
@@ -370,6 +378,148 @@ describe("MediaHunter application", () => {
     expect(legacyArticles.json<{ items: Array<{ title: string }> }>().items.map((item) => item.title)).toContain(
       "A deterministic research article"
     );
+  });
+
+  it("serves, reviews, exports, and tombstones legacy article ids through shared content", async () => {
+    const articles = await runtime.app.inject({
+      method: "GET",
+      url: "/api/research/articles",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const legacy = articles
+      .json<{ items: Array<{ id: string; article_url: string }> }>()
+      .items.find((item) => item.article_url === COLLECTED_ARTICLE_URL);
+    expect(legacy).toBeTruthy();
+
+    publicWeb.responses.set(COLLECTED_ARTICLE_URL, {
+      status: 200,
+      html: ARTICLE_HTML.replace("Fixture article body for persistence.", "Shared library update body."),
+      finalUrl: COLLECTED_ARTICLE_URL
+    });
+    const updateClaim = await createAndClaimTask(COLLECTED_ARTICLE_URL);
+    await runClaim(updateClaim);
+
+    const detail = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/articles/${legacy!.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const contentArticleId = detail.json<{ article: { content_article_id: string } }>().article.content_article_id;
+
+    const fulltext = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/articles/${legacy!.id}/fulltext`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(fulltext.statusCode).toBe(200);
+    expect(fulltext.json<{ content_text: string }>().content_text).toContain("Shared library update body");
+
+    const searched = await runtime.app.inject({
+      method: "GET",
+      url: "/api/research/articles?keyword=Shared%20library%20update",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(searched.json<{ items: Array<{ id: string }> }>().items.map((item) => item.id)).toContain(legacy!.id);
+
+    const reviewed = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research/articles/${legacy!.id}/review`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { usability_level: "A", review_status: "reviewed", comment: "shared-model-review" }
+    });
+    expect(reviewed.statusCode).toBe(200);
+    const reviewedDetail = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/articles/${legacy!.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(reviewedDetail.json<{ article: { usability_level: string; review_status: string } }>().article).toMatchObject({
+      usability_level: "A",
+      review_status: "reviewed"
+    });
+
+    const exported = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/export/articles.csv?article_ids=${legacy!.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body).toContain("Shared library update body");
+    expect(exported.body).not.toContain("shared-model-review");
+
+    const deleted = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research/articles/batch-delete",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { article_ids: [legacy!.id] }
+    });
+    expect(deleted.statusCode).toBe(200);
+
+    const missing = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/articles/${legacy!.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(missing.statusCode).toBe(404);
+    const tombstoned = await runtime.app.inject({
+      method: "GET",
+      url: `/api/content/articles/${contentArticleId}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const tombstoneBody = tombstoned.json<{ snapshots: unknown[]; tombstone: { reason: string } }>();
+    expect(tombstoneBody.snapshots).toEqual([]);
+    expect(tombstoneBody.tombstone.reason).toBe("user_deleted");
+
+    const afterDeleteSearch = await runtime.app.inject({
+      method: "GET",
+      url: "/api/research/articles?keyword=Shared%20library%20update",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(afterDeleteSearch.json<{ total: number }>().total).toBe(0);
+    const afterDeleteExport = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research/export/articles.csv?article_ids=${legacy!.id}`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(afterDeleteExport.body).not.toContain("Shared library update body");
+    const blockedRestore = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: COLLECTED_ARTICLE_URL }
+    });
+    expect(blockedRestore.statusCode).toBe(409);
+  });
+
+  it("retains successful articles and failure evidence in a partially failed collection item", async () => {
+    const account = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research/accounts",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: "Partial Fixture", manual_article_urls: [PARTIAL_URL, FORBIDDEN_URL] }
+    });
+    const accountId = account.json<{ id: string }>().id;
+    const task = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research/tasks",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        task_name: "partial-fixture",
+        task_type: "single_account_incremental",
+        source_ids: [accountId],
+        target_urls: [],
+        concurrency: 1
+      }
+    });
+    const taskId = task.json<{ id: string }>().id;
+    const claim = await runtime.services.research.repo.claimNextTaskItem([]);
+    expect(claim?.task_id).toBe(taskId);
+    await runClaim(claim!);
+
+    const items = await runtime.services.research.repo.listTaskItems(taskId);
+    expect(items[0]?.status).toBe("success");
+    expect(items[0]?.article_count).toBe(1);
+    expect(JSON.stringify(items[0]?.last_result)).toContain(FORBIDDEN_URL);
   });
 
   it.each([

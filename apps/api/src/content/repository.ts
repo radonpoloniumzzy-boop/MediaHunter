@@ -41,6 +41,10 @@ export class ContentRepository {
       let article = existingRows[0];
       const created = !article;
 
+      if (article?.status === "removed") {
+        throw new Error("CONTENT_TOMBSTONED");
+      }
+
       if (!article) {
         const articleRows = await tx<Record<string, unknown>[]>`
           insert into content_article (
@@ -93,7 +97,7 @@ export class ContentRepository {
         insert into content_snapshot (
           id, article_id, version, source_url, final_url, http_status, title, author,
           publish_time, summary, cover_url, content_html, content_text, raw_json,
-          content_hash, origin, captured_at
+          content_hash, has_video, has_audio, origin, captured_at
         )
         values (
           ${snapshotId}, ${String(article.id)}, ${nextVersion}, ${input.requestedUrl},
@@ -101,6 +105,7 @@ export class ContentRepository {
           ${input.snapshot.publish_time}, ${input.snapshot.summary}, ${input.snapshot.cover_url},
           ${input.snapshot.content_html}, ${input.snapshot.content_text},
           ${tx.json(JSON.parse(JSON.stringify(input.snapshot.raw_json)))}, ${input.contentHash},
+          ${input.snapshot.has_video}, ${input.snapshot.has_audio},
           ${input.origin ?? "public_fetch"}, ${input.capturedAt ?? new Date().toISOString()}
         )
         returning id, article_id, version, content_hash, captured_at::text
@@ -175,11 +180,18 @@ export class ContentRepository {
       where cs.article_id = ${articleId}
       order by cs.version desc, ir.reference_type, ir.position
     `;
+    const tombstones = await this.sql<Record<string, unknown>[]>`
+      select canonical_url, source_name, title, last_content_hash, reason, removed_at::text
+      from content_source_tombstone
+      where content_article_id = ${articleId}
+      limit 1
+    `;
 
     return {
       article: articleRows[0],
       snapshots,
-      image_references: imageReferences
+      image_references: imageReferences,
+      tombstone: tombstones[0] ?? null
     };
   }
 
