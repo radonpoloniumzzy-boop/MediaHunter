@@ -1079,6 +1079,109 @@ label {
   color: #23745b;
 }
 
+.quick-scan-panel,
+.quick-scan-run,
+.discovery-failures,
+.evidence-list {
+  display: grid;
+  gap: 12px;
+}
+
+.quick-scan-panel > .section-title > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.quick-scan-panel > .section-title span,
+.evidence-main p {
+  color: #65758d;
+  font-size: 12px;
+}
+
+.quick-scan-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.quick-scan-input textarea {
+  min-height: 112px;
+}
+
+.quick-scan-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.discovery-failures {
+  padding: 12px;
+  border: 1px solid #f1d1ce;
+  border-radius: 8px;
+  background: #fff8f7;
+}
+
+.discovery-failures p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin: 0;
+  color: #6d3540;
+  font-size: 12px;
+}
+
+.discovery-failures p span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.evidence-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #edf1f7;
+  padding-top: 14px;
+}
+
+.evidence-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.65fr);
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #e1e7f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.evidence-main,
+.evidence-decision {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+}
+
+.evidence-main > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.evidence-main p {
+  margin: 0;
+}
+
+.evidence-main a {
+  color: #3467d6;
+  font-size: 12px;
+}
+
+.ghost-button.danger {
+  color: #a33a47;
+  border-color: #efcbd0;
+}
+
 @media (max-width: 1280px) {
   .kpi-grid,
   .module-metrics {
@@ -1113,7 +1216,9 @@ label {
 
   .question-row,
   .brief-editor,
-  .history-row {
+  .history-row,
+  .quick-scan-input,
+  .evidence-card {
     grid-template-columns: 1fr;
   }
 
@@ -1155,6 +1260,10 @@ label {
   .question-row,
   .brief-editor {
     grid-template-columns: 1fr;
+  }
+
+  .quick-scan-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .project-intake .section-title,

@@ -38,24 +38,32 @@ import {
   type AuthUser,
   type DashboardSummary,
   type IncubationEntity,
+  type ProjectDiscoveryRunDetail,
+  type ProjectEvidenceItem,
   type ResearchProjectDetail,
   answerResearchProjectQuestion,
   confirmResearchProjectBrief,
   createResearchProject,
+  downloadProjectEvidence,
   downloadExport,
   getResearchProject,
+  getLatestProjectDiscovery,
   getDashboard,
   importEntity,
   listEntity,
   listResearchProjects,
+  listProjectEvidence,
   login,
   logout,
   me,
   saveEntity,
   reviseResearchProjectBrief,
+  retryProjectDiscovery,
+  runProjectDiscovery,
   startResearchProject,
   suggestTopics,
-  suggestTrackScore
+  suggestTrackScore,
+  updateProjectEvidence
 } from "./api";
 import type { LucideIcon } from "lucide-react";
 import { getProjectActionState } from "./project-workspace-state";
@@ -1423,6 +1431,13 @@ function ResearchProjectsPage({ token }: { token: string }) {
                 </div>
               </div>
 
+              <ProjectQuickScan
+                key={selected.project.id}
+                token={token}
+                projectId={selected.project.id}
+                ready={selected.project.status === "research_ready"}
+              />
+
               <div className="panel project-history">
                 <div className="section-title"><h2>版本与确认记录</h2><span>{selected.confirmations.length} 次确认</span></div>
                 <div className="history-list">
@@ -1446,6 +1461,138 @@ function ResearchProjectsPage({ token }: { token: string }) {
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+function ProjectQuickScan({ token, projectId, ready }: { token: string; projectId: string; ready: boolean }) {
+  const [rawUrls, setRawUrls] = useState("");
+  const [run, setRun] = useState<ProjectDiscoveryRunDetail>({ run: null, items: [] });
+  const [evidence, setEvidence] = useState<ProjectEvidenceItem[]>([]);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [filter, setFilter] = useState<"all" | ProjectEvidenceItem["selection_status"]>("all");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    if (!ready) return;
+    const [latest, evidenceResult] = await Promise.all([
+      getLatestProjectDiscovery(token, projectId),
+      listProjectEvidence(token, projectId)
+    ]);
+    setRun(latest);
+    setEvidence(evidenceResult.items);
+    setReasons(Object.fromEntries(evidenceResult.items.map((item) => [item.id, item.decision_reason ?? ""])));
+  };
+
+  useEffect(() => {
+    void refresh().catch((caught) => setError(caughtMessage(caught, "Quick Scan 加载失败")));
+  }, [token, projectId, ready]);
+
+  const act = async (action: () => Promise<unknown>) => {
+    try {
+      setBusy(true);
+      setError(null);
+      await action();
+      await refresh();
+    } catch (caught) {
+      setError(caughtMessage(caught, "Quick Scan 操作失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const urls = rawUrls.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+  const failedItems = run.items.filter((item) => item.status === "failed");
+  const visibleEvidence = filter === "all" ? evidence : evidence.filter((item) => item.selection_status === filter);
+
+  return (
+    <div className="panel quick-scan-panel">
+      <div className="section-title">
+        <div><h2><Search size={18} /> Quick Scan</h2><span>粘贴微信公众号公开文章 URL，建立项目证据清单</span></div>
+        <div className="form-actions">
+          <button className="ghost-button" disabled={busy || !evidence.some((item) => item.selection_status === "included")} onClick={() => void act(() => downloadProjectEvidence(token, projectId, "md"))}>
+            <Download size={15} /> Markdown
+          </button>
+          <button className="ghost-button" disabled={busy || !evidence.some((item) => item.selection_status === "included")} onClick={() => void act(() => downloadProjectEvidence(token, projectId, "csv"))}>
+            <Download size={15} /> CSV
+          </button>
+        </div>
+      </div>
+
+      {!ready ? <Notice tone="success">先完成 Project Brief 确认并点击“启动研究”，即可粘贴文章链接。</Notice> : (
+        <>
+          <div className="quick-scan-input">
+            <textarea
+              value={rawUrls}
+              onChange={(event) => setRawUrls(event.target.value)}
+              placeholder={"每行一个微信公众号文章 URL，单次最多 30 条\nhttps://mp.weixin.qq.com/s?..."}
+            />
+            <button className="primary-button" disabled={busy || urls.length === 0 || urls.length > 30} onClick={() => void act(async () => {
+              const result = await runProjectDiscovery(token, projectId, urls);
+              setRun(result);
+              setRawUrls("");
+            })}>
+              {busy ? <Loader2 className="spin" size={16} /> : <Search size={16} />} 抓取并加入候选
+            </button>
+          </div>
+
+          {error ? <Notice tone="error">{error}</Notice> : null}
+
+          {run.run ? (
+            <div className="quick-scan-run">
+              <div className="quick-scan-stats">
+                <MetricCard label="运行状态" value={run.run.status} />
+                <MetricCard label="提交" value={run.run.requested_count} />
+                <MetricCard label="成功" value={run.run.succeeded_count} />
+                <MetricCard label="失败" value={run.run.failed_count} />
+              </div>
+              {failedItems.length ? (
+                <div className="discovery-failures">
+                  <div className="section-title">
+                    <h3><AlertTriangle size={16} /> 抓取失败</h3>
+                    <button className="ghost-button" disabled={busy || !run.run} onClick={() => void act(() => retryProjectDiscovery(token, projectId, run.run!.id))}>
+                      <RefreshCw size={15} /> 仅重试失败项
+                    </button>
+                  </div>
+                  {failedItems.map((item) => <p key={item.id}><span>{item.requested_url}</span><strong>{item.error_message ?? "抓取失败"}</strong></p>)}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="evidence-toolbar">
+            <div className="section-title"><h3>项目证据</h3><span>{visibleEvidence.length} 条</span></div>
+            <select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
+              <option value="all">全部状态</option>
+              <option value="candidate">候选</option>
+              <option value="included">已纳入</option>
+              <option value="excluded">已排除</option>
+            </select>
+          </div>
+
+          <div className="evidence-list">
+            {visibleEvidence.map((item) => (
+              <article className="evidence-card" key={item.id}>
+                <div className="evidence-main">
+                  <div><span className={`status-pill ${item.selection_status === "included" ? "green" : ""}`}>{item.selection_status}</span><strong>{item.title}</strong></div>
+                  <p>{item.source_name ?? item.author ?? "未知来源"} · {fmtDate(item.publish_time)} · 抓取于 {fmtDate(item.captured_at)}</p>
+                  <a href={item.canonical_url} target="_blank" rel="noreferrer">查看原文</a>
+                </div>
+                <div className="evidence-decision">
+                  <input value={reasons[item.id] ?? ""} onChange={(event) => setReasons({ ...reasons, [item.id]: event.target.value })} placeholder="选择或排除理由" />
+                  <div className="form-actions">
+                    <button className="ghost-button" disabled={busy} onClick={() => void act(() => updateProjectEvidence(token, projectId, item.id, "candidate"))}>候选</button>
+                    <button className="primary-button" disabled={busy} onClick={() => void act(() => updateProjectEvidence(token, projectId, item.id, "included", reasons[item.id]))}><CheckCircle2 size={15} /> 纳入</button>
+                    <button className="ghost-button danger" disabled={busy || !(reasons[item.id] ?? "").trim()} onClick={() => void act(() => updateProjectEvidence(token, projectId, item.id, "excluded", reasons[item.id]))}><X size={15} /> 排除</button>
+                  </div>
+                </div>
+              </article>
+            ))}
+            {!visibleEvidence.length ? <p className="muted">当前筛选下没有项目证据。</p> : null}
+          </div>
+        </>
+      )}
     </div>
   );
 }

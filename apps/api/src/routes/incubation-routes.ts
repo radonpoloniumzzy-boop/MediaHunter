@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { IncubationService } from "../incubation/service";
+import { ContentSampleReferenceError } from "../incubation/content-sample-reference";
 import type { ExportFormat, IncubationEntity } from "../incubation/types";
 import type { ResearchService } from "../research/research-service";
 import type { AuthUser } from "../research/types";
@@ -88,7 +89,15 @@ export async function registerIncubationRoutes(app: FastifyInstance, incubation:
     if (!user) return { error: "未授权" };
     const { entity } = EntityParamsSchema.parse(request.params);
     const body = GenericBodySchema.parse(request.body);
-    return incubation.upsertEntity(user, entity as IncubationEntity, body);
+    try {
+      return await incubation.upsertEntity(user, entity as IncubationEntity, body);
+    } catch (error) {
+      if (error instanceof ContentSampleReferenceError) {
+        reply.code(409);
+        return { error: error.message };
+      }
+      throw error;
+    }
   });
 
   app.post("/api/incubation/import/:entity", async (request, reply) => {

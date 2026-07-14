@@ -30,6 +30,34 @@ export interface ResearchProjectDetail {
   confirmations: AnyRecord[];
 }
 
+export interface ProjectDiscoveryRunDetail {
+  run: null | (AnyRecord & {
+    id: string;
+    status: "running" | "completed" | "partial" | "failed";
+    requested_count: number;
+    succeeded_count: number;
+    failed_count: number;
+  });
+  items: Array<AnyRecord & {
+    id: string;
+    requested_url: string;
+    status: "pending" | "succeeded" | "failed";
+    error_message?: string | null;
+  }>;
+}
+
+export interface ProjectEvidenceItem extends AnyRecord {
+  id: string;
+  selection_status: "candidate" | "included" | "excluded";
+  decision_reason?: string | null;
+  title: string;
+  author?: string | null;
+  source_name?: string | null;
+  publish_time?: string | null;
+  canonical_url: string;
+  captured_at?: string | null;
+}
+
 export interface DashboardSummary {
   tracks: AnyRecord;
   assets: AnyRecord;
@@ -217,4 +245,57 @@ export function confirmResearchProjectBrief(token: string, id: string) {
 
 export function startResearchProject(token: string, id: string) {
   return apiFetch<{ id: string; status: string }>(`/research-projects/${id}/start`, token, { method: "POST" });
+}
+
+export function runProjectDiscovery(token: string, id: string, urls: string[]) {
+  return apiFetch<ProjectDiscoveryRunDetail>(`/research-projects/${id}/discovery-runs`, token, {
+    method: "POST",
+    body: JSON.stringify({ urls })
+  });
+}
+
+export function getLatestProjectDiscovery(token: string, id: string) {
+  return apiFetch<ProjectDiscoveryRunDetail>(`/research-projects/${id}/discovery-runs/latest`, token);
+}
+
+export function retryProjectDiscovery(token: string, id: string, runId: string) {
+  return apiFetch<ProjectDiscoveryRunDetail>(`/research-projects/${id}/discovery-runs/${runId}/retry-failed`, token, {
+    method: "POST"
+  });
+}
+
+export function listProjectEvidence(token: string, id: string, status?: ProjectEvidenceItem["selection_status"]) {
+  return apiFetch<{ items: ProjectEvidenceItem[] }>(`/research-projects/${id}/evidence${toQuery({ status })}`, token);
+}
+
+export function updateProjectEvidence(
+  token: string,
+  projectId: string,
+  evidenceId: string,
+  status: ProjectEvidenceItem["selection_status"],
+  decisionReason?: string | null
+) {
+  return apiFetch<{ item: ProjectEvidenceItem }>(`/research-projects/${projectId}/evidence/${evidenceId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ status, decision_reason: decisionReason })
+  });
+}
+
+export async function downloadProjectEvidence(token: string, projectId: string, format: "md" | "csv") {
+  const response = await fetch(`${API_BASE_URL}/research-projects/${projectId}/evidence/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(error.error ?? `Request failed with ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `project-evidence-${projectId}.${format}`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
 }

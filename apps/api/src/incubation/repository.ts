@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Sql } from "postgres";
 
 import type { AuthUser } from "../research/types";
+import { assertContentSampleReferencePair, ContentSampleReferenceError } from "./content-sample-reference";
 import type { IncubationEntity } from "./types";
 
 function asJson<T>(sql: Sql, value: T) {
@@ -89,9 +90,27 @@ const ENTITY_TABLE: Record<IncubationEntity, { table: string; orderBy: string; e
     exportColumns: ["id", "name", "platform_id", "track_id", "url", "follower_count", "account_level", "content_line", "posts_30d", "viral_posts_30d", "viral_rate"]
   },
   "content-samples": {
-    table: "incubation_content_sample",
+    table: "incubation_content_sample_view",
     orderBy: "is_viral desc, collected_at desc",
-    exportColumns: ["id", "title", "platform_id", "track_id", "author_name", "original_url", "likes", "collects", "comments", "shares", "plays", "follower_count", "interaction_rate", "is_viral", "is_low_follower_viral"]
+    exportColumns: [
+      "id",
+      "title",
+      "platform_id",
+      "track_id",
+      "author_name",
+      "original_url",
+      "likes",
+      "collects",
+      "comments",
+      "shares",
+      "plays",
+      "follower_count",
+      "interaction_rate",
+      "is_viral",
+      "is_low_follower_viral",
+      "content_article_id",
+      "content_snapshot_id"
+    ]
   },
   comments: {
     table: "incubation_comment_need",
@@ -148,6 +167,20 @@ const ENTITY_TABLE: Record<IncubationEntity, { table: string; orderBy: string; e
 
 export class IncubationRepository {
   constructor(private readonly sql: Sql) {}
+
+  private async assertContentSampleReference(contentArticleId: string | null, contentSnapshotId: string | null) {
+    assertContentSampleReferencePair(contentArticleId, contentSnapshotId);
+    if (!contentArticleId || !contentSnapshotId) return;
+
+    const [snapshot] = await this.sql<Record<string, unknown>[]>`
+      select id
+      from content_snapshot
+      where id = ${contentSnapshotId}
+        and article_id = ${contentArticleId}
+      limit 1
+    `;
+    if (!snapshot) throw new ContentSampleReferenceError();
+  }
 
   async logOperation(actor: AuthUser | null, action: string, targetType: string, targetId: string | null, detail: Record<string, unknown>) {
     await this.sql`
@@ -462,16 +495,20 @@ export class IncubationRepository {
 
   async upsertContentSample(user: AuthUser, input: Record<string, unknown>) {
     const id = asString(input.id, randomUUID());
+    const contentArticleId = asNullableString(input.content_article_id);
+    const contentSnapshotId = asNullableString(input.content_snapshot_id);
+    await this.assertContentSampleReference(contentArticleId, contentSnapshotId);
     await this.sql`
       insert into incubation_content_sample (
-        id, platform_id, benchmark_account_id, track_id, title, original_url, author_name,
+        id, content_article_id, content_snapshot_id, platform_id, benchmark_account_id, track_id, title, original_url, author_name,
         content_type, content_line, keywords, likes, collects, comments, shares, plays,
         follower_count, interaction_rate, is_low_follower_viral, is_viral, title_structure,
         hook, cover_type, script_structure, comment_need_summary, copy_level, risk_level,
         analysis_json, created_by
       )
       values (
-        ${id}, ${asNullableString(input.platform_id)}, ${asNullableString(input.benchmark_account_id)}, ${asNullableString(input.track_id)},
+        ${id}, ${contentArticleId}, ${contentSnapshotId},
+        ${asNullableString(input.platform_id)}, ${asNullableString(input.benchmark_account_id)}, ${asNullableString(input.track_id)},
         ${asString(input.title)}, ${asNullableString(input.original_url)}, ${asNullableString(input.author_name)},
         ${asString(input.content_type, "unknown")}, ${asNullableString(input.content_line)}, ${asJson(this.sql, asStringArray(input.keywords))},
         ${asNumber(input.likes)}, ${asNumber(input.collects)}, ${asNumber(input.comments)}, ${asNumber(input.shares)}, ${asNumber(input.plays)},
@@ -481,7 +518,9 @@ export class IncubationRepository {
         ${asJson(this.sql, input.analysis_json ?? {})}, ${user.id}
       )
       on conflict (id) do update
-      set platform_id = excluded.platform_id,
+      set content_article_id = excluded.content_article_id,
+          content_snapshot_id = excluded.content_snapshot_id,
+          platform_id = excluded.platform_id,
           benchmark_account_id = excluded.benchmark_account_id,
           track_id = excluded.track_id,
           title = excluded.title,
@@ -735,10 +774,15 @@ export class IncubationRepository {
     const raw = asString(value);
     if (!raw) return null;
     const [row] = await this.sql<Record<string, unknown>[]>`
-      select id
-      from incubation_content_sample
-      where id = ${raw} or title = ${raw} or original_url = ${raw}
-      order by updated_at desc
+      select sample.id
+      from incubation_content_sample sample
+      join incubation_content_sample_view projected on projected.id = sample.id
+      where sample.id = ${raw}
+         or sample.title = ${raw}
+         or sample.original_url = ${raw}
+         or projected.title = ${raw}
+         or projected.original_url = ${raw}
+      order by sample.updated_at desc
       limit 1
     `;
     return row ? String(row.id) : null;
@@ -774,7 +818,7 @@ export class IncubationRepository {
     const trackClause = trackId ? this.sql`and track_id = ${trackId}` : this.sql``;
     const contentSamples = await this.sql<Record<string, unknown>[]>`
       select *
-      from incubation_content_sample
+      from incubation_content_sample_view
       where is_viral = true
         ${trackClause}
       order by is_low_follower_viral desc, interaction_rate desc, updated_at desc

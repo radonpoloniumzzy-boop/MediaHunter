@@ -500,9 +500,60 @@ export async function ensureSchema(sql: Sql): Promise<void> {
       confirmed_at timestamptz not null default now()
     );
 
+    create table if not exists project_discovery_run (
+      id text primary key,
+      project_id text not null references research_project(id) on delete cascade,
+      brief_version_id text not null references project_brief_version(id) on delete cascade,
+      mode text not null default 'manual_urls',
+      status text not null default 'running',
+      requested_count integer not null default 0,
+      succeeded_count integer not null default 0,
+      failed_count integer not null default 0,
+      created_by text references users(id) on delete set null,
+      started_at timestamptz not null default now(),
+      completed_at timestamptz
+    );
+
+    create table if not exists project_discovery_item (
+      id text primary key,
+      run_id text not null references project_discovery_run(id) on delete cascade,
+      requested_url text not null,
+      normalized_url text not null,
+      status text not null default 'pending',
+      content_article_id text references content_article(id) on delete set null,
+      content_snapshot_id text references content_snapshot(id) on delete set null,
+      error_message text,
+      created_at timestamptz not null default now(),
+      completed_at timestamptz,
+      unique(run_id, normalized_url)
+    );
+
+    create table if not exists project_article_evidence (
+      id text primary key,
+      project_id text not null references research_project(id) on delete cascade,
+      content_article_id text not null references content_article(id) on delete cascade,
+      content_snapshot_id text not null references content_snapshot(id) on delete cascade,
+      source_run_id text references project_discovery_run(id) on delete set null,
+      selection_status text not null default 'candidate',
+      decision_reason text,
+      added_by text references users(id) on delete set null,
+      decided_by text references users(id) on delete set null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique(project_id, content_article_id),
+      check (selection_status in ('candidate', 'included', 'excluded')),
+      constraint project_article_evidence_reason_check check (
+        (selection_status = 'candidate' and decision_reason is null)
+        or (selection_status in ('included', 'excluded') and nullif(btrim(decision_reason), '') is not null)
+      )
+    );
+
     create index if not exists idx_research_project_status on research_project(status, updated_at desc);
     create index if not exists idx_project_brief_project on project_brief_version(project_id, version desc);
     create unique index if not exists idx_project_brief_confirmation_version on project_brief_confirmation(brief_version_id);
+    create index if not exists idx_project_discovery_run_project on project_discovery_run(project_id, started_at desc);
+    create index if not exists idx_project_discovery_item_run on project_discovery_item(run_id, status);
+    create index if not exists idx_project_article_evidence_project on project_article_evidence(project_id, selection_status, updated_at desc);
 
     alter table article add column if not exists content_article_id text references content_article(id) on delete set null;
     alter table content_snapshot add column if not exists has_video boolean not null default false;
@@ -906,6 +957,107 @@ export async function ensureSchema(sql: Sql): Promise<void> {
     create index if not exists idx_incubation_topic_status on incubation_topic(status, priority, updated_at desc);
     create index if not exists idx_incubation_owned_account_stage on incubation_owned_account(stage, account_level, updated_at desc);
     create index if not exists idx_incubation_material_track on incubation_material_asset(track_id, asset_type, updated_at desc);
+  `);
+
+  await sql.unsafe(`
+    alter table incubation_content_sample
+      add column if not exists content_article_id text references content_article(id) on delete set null;
+    alter table incubation_content_sample
+      add column if not exists content_snapshot_id text references content_snapshot(id) on delete set null;
+
+    create index if not exists idx_incubation_content_article
+      on incubation_content_sample(content_article_id);
+    create index if not exists idx_incubation_content_snapshot
+      on incubation_content_sample(content_snapshot_id);
+    create unique index if not exists idx_content_snapshot_article_identity
+      on content_snapshot(article_id, id);
+
+    do $$
+    begin
+      if not exists (
+        select 1 from pg_constraint where conname = 'incubation_content_sample_snapshot_article_fk'
+      ) then
+        alter table incubation_content_sample
+          add constraint incubation_content_sample_snapshot_article_fk
+          foreign key (content_article_id, content_snapshot_id)
+          references content_snapshot(article_id, id)
+          match full
+          on delete set null;
+      end if;
+      if not exists (
+        select 1 from pg_constraint where conname = 'project_discovery_item_snapshot_article_fk'
+      ) then
+        alter table project_discovery_item
+          add constraint project_discovery_item_snapshot_article_fk
+          foreign key (content_article_id, content_snapshot_id)
+          references content_snapshot(article_id, id)
+          match full
+          on delete set null;
+      end if;
+      if not exists (
+        select 1 from pg_constraint where conname = 'project_article_evidence_snapshot_article_fk'
+      ) then
+        alter table project_article_evidence
+          add constraint project_article_evidence_snapshot_article_fk
+          foreign key (content_article_id, content_snapshot_id)
+          references content_snapshot(article_id, id)
+          on delete cascade;
+      end if;
+      if not exists (
+        select 1 from pg_constraint where conname = 'project_article_evidence_reason_check'
+      ) then
+        alter table project_article_evidence
+          add constraint project_article_evidence_reason_check check (
+            (selection_status = 'candidate' and decision_reason is null)
+            or (selection_status in ('included', 'excluded') and nullif(btrim(decision_reason), '') is not null)
+          );
+      end if;
+    end
+    $$;
+
+    create or replace view incubation_content_sample_view as
+    select
+      sample.id,
+      sample.platform_id,
+      sample.benchmark_account_id,
+      sample.track_id,
+      coalesce(snapshot.title, sample.title) as title,
+      coalesce(article.canonical_url, sample.original_url) as original_url,
+      coalesce(snapshot.author, sample.author_name) as author_name,
+      coalesce(snapshot.publish_time, sample.publish_time) as publish_time,
+      sample.collected_at,
+      sample.content_type,
+      sample.content_line,
+      sample.keywords,
+      sample.likes,
+      sample.collects,
+      sample.comments,
+      sample.shares,
+      sample.plays,
+      sample.follower_count,
+      sample.interaction_rate,
+      sample.is_low_follower_viral,
+      sample.is_viral,
+      sample.title_structure,
+      sample.hook,
+      sample.cover_type,
+      sample.script_structure,
+      sample.comment_need_summary,
+      sample.copy_level,
+      sample.risk_level,
+      sample.analysis_json,
+      sample.created_by,
+      sample.created_at,
+      sample.updated_at,
+      sample.content_article_id,
+      sample.content_snapshot_id
+    from incubation_content_sample sample
+    left join content_article article
+      on article.id = sample.content_article_id
+      and article.status = 'active'
+    left join content_snapshot snapshot
+      on snapshot.id = sample.content_snapshot_id
+      and snapshot.article_id = article.id;
   `);
 
   await seedResearchDefaults(sql);

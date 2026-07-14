@@ -18,6 +18,7 @@ export interface PublicWebAdapter {
 export class FetchPublicWebAdapter implements PublicWebAdapter {
   async fetchPage(url: string): Promise<FetchedPage> {
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
       headers: {
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"

@@ -16,6 +16,7 @@ const TRACKED_ARTICLE_URL = "https://mp.weixin.qq.com/s?scene=9&mid=1&__biz=test
 const FORBIDDEN_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=403";
 const INVALID_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=invalid";
 const PARTIAL_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=partial";
+const SECOND_SHARED_ARTICLE_URL = "https://mp.weixin.qq.com/s?__biz=test&mid=second-shared";
 
 const ARTICLE_HTML = `
 <!doctype html>
@@ -102,6 +103,11 @@ describe("MediaHunter application", () => {
     publicWeb.responses.set(FORBIDDEN_URL, { status: 403, html: "Forbidden", finalUrl: FORBIDDEN_URL });
     publicWeb.responses.set(INVALID_URL, { status: 200, html: "<html>invalid</html>", finalUrl: INVALID_URL });
     publicWeb.responses.set(PARTIAL_URL, { status: 200, html: ARTICLE_HTML, finalUrl: PARTIAL_URL });
+    publicWeb.responses.set(SECOND_SHARED_ARTICLE_URL, {
+      status: 200,
+      html: ARTICLE_HTML.replace("A deterministic research article", "A second shared article"),
+      finalUrl: SECOND_SHARED_ARTICLE_URL
+    });
 
     container = await new PostgreSqlContainer("postgres:16-alpine")
       .withDatabase("mediahunter_test")
@@ -149,6 +155,39 @@ describe("MediaHunter application", () => {
     const claim = await runtime.services.research.repo.claimNextTaskItem([]);
     expect(claim).not.toBeNull();
     return claim!;
+  }
+
+  async function createReadyProject() {
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research-projects",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { raw_request: "为新产品建立公众号研究项目，提升目标客户的品牌认知。" }
+    });
+    const body = created.json<{
+      project: { id: string };
+      brief: { open_questions: Array<{ key: "change_event" | "target_audience" | "communication_goal" }> };
+    }>();
+    for (const question of body.brief.open_questions) {
+      await runtime.app.inject({
+        method: "POST",
+        url: `/api/research-projects/${body.project.id}/answers`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { question_key: question.key, answer: `已确认的${question.key}` }
+      });
+    }
+    await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${body.project.id}/confirm`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {}
+    });
+    await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${body.project.id}/start`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    return body.project.id;
   }
 
   async function runClaim(claim: TaskItemClaim) {
@@ -634,6 +673,395 @@ describe("MediaHunter application", () => {
     });
     expect(skillCreated.statusCode).toBe(201);
     expect(skillCreated.json<{ project: { intake_source: string } }>().project.intake_source).toBe("skill");
+  });
+
+  it("rejects manual project discovery until the confirmed brief starts research", async () => {
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/research-projects",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { raw_request: "为新产品建立公众号研究项目并寻找公开内容证据。" }
+    });
+    const projectId = created.json<{ project: { id: string } }>().project.id;
+
+    const response = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { urls: [ARTICLE_URL] }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "Project Brief 尚未确认并启动研究" });
+  });
+
+  it("collects, retries, selects, deduplicates, and exports project evidence", async () => {
+    const projectId = await createReadyProject();
+    const invalidSource = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { urls: ["https://example.com/article"] }
+    });
+    expect(invalidSource.statusCode).toBe(400);
+    const tooMany = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { urls: Array.from({ length: 31 }, (_, index) => `${ARTICLE_URL}&idx=${index}`) }
+    });
+    expect(tooMany.statusCode).toBe(400);
+
+    const discovery = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { urls: [TRACKED_ARTICLE_URL, ARTICLE_URL, SECOND_SHARED_ARTICLE_URL, FORBIDDEN_URL] }
+    });
+    expect(discovery.statusCode).toBe(201);
+    const discoveryBody = discovery.json<{
+      run: { id: string; status: string; requested_count: number; succeeded_count: number; failed_count: number };
+      items: Array<{ status: string; error_message?: string }>;
+    }>();
+    expect(discoveryBody.run).toMatchObject({
+      status: "partial",
+      requested_count: 3,
+      succeeded_count: 2,
+      failed_count: 1
+    });
+    expect(discoveryBody.items.map((item) => item.status).sort()).toEqual(["failed", "succeeded", "succeeded"]);
+    expect(discoveryBody.items).toContainEqual(expect.objectContaining({ requested_url: TRACKED_ARTICLE_URL }));
+
+    const evidence = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research-projects/${projectId}/evidence`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    const evidenceItems = evidence.json<{ items: Array<{ id: string; selection_status: string; title: string }> }>().items;
+    const evidenceItem = evidenceItems.find((item) => item.title === "A deterministic research article")!;
+    const excludedItem = evidenceItems.find((item) => item.title === "A second shared article")!;
+    expect(evidenceItem).toMatchObject({ selection_status: "candidate", title: "A deterministic research article" });
+
+    const rejectedDecision = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/research-projects/${projectId}/evidence/${evidenceItem.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "excluded" }
+    });
+    expect(rejectedDecision.statusCode).toBe(400);
+    const defaultInclusion = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/research-projects/${projectId}/evidence/${evidenceItem.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "included" }
+    });
+    expect(defaultInclusion.statusCode).toBe(200);
+    expect(defaultInclusion.json<{ item: { decision_reason: string } }>().item.decision_reason).toBe("手动纳入");
+
+    const included = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/research-projects/${projectId}/evidence/${evidenceItem.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "included", decision_reason: "与项目目标直接相关" }
+    });
+    expect(included.statusCode).toBe(200);
+    const excluded = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/research-projects/${projectId}/evidence/${excludedItem.id}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { status: "excluded", decision_reason: "与本项目范围无关" }
+    });
+    expect(excluded.statusCode).toBe(200);
+
+    const repeated = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { urls: [ARTICLE_URL] }
+    });
+    expect(repeated.statusCode).toBe(201);
+    expect(repeated.json<{ run: { status: string } }>().run.status).toBe("completed");
+    const evidenceAfterRepeat = await runtime.app.inject({
+      method: "GET",
+      url: `/api/research-projects/${projectId}/evidence`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(evidenceAfterRepeat.json<{ items: Array<{ title: string; selection_status: string }> }>().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "A deterministic research article", selection_status: "included" }),
+        expect.objectContaining({ title: "A second shared article", selection_status: "excluded" })
+      ])
+    );
+
+    const retry = await runtime.app.inject({
+      method: "POST",
+      url: `/api/research-projects/${projectId}/discovery-runs/${discoveryBody.run.id}/retry-failed`,
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(retry.statusCode).toBe(201);
+    expect(retry.json<{ run: { status: string } }>().run.status).toBe("failed");
+
+    for (const format of ["csv", "md"] as const) {
+      const exported = await runtime.app.inject({
+        method: "GET",
+        url: `/api/research-projects/${projectId}/evidence/export?format=${format}`,
+        headers: { authorization: `Bearer ${token}` }
+      });
+      expect(exported.statusCode).toBe(200);
+      expect(exported.body).toContain("A deterministic research article");
+      expect(exported.body).not.toContain("A second shared article");
+      expect(exported.body).not.toContain("Fixture article body for persistence");
+    }
+  });
+
+  it("serves shared article facts through a linked Content Sample while preserving its operational identity", async () => {
+    const legacyCreated = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Legacy-only content sample",
+        original_url: "https://legacy.example/unlinked-content-sample",
+        author_name: "Legacy sample author",
+        risk_level: "low"
+      }
+    });
+    const legacySampleId = legacyCreated.json<{ id: string }>().id;
+
+    const submitted = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: ARTICLE_URL }
+    });
+    expect([200, 201]).toContain(submitted.statusCode);
+    const shared = submitted.json<{
+      article: { id: string; canonical_url: string };
+      snapshot: { id: string };
+    }>();
+
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Duplicated legacy title",
+        original_url: "https://legacy.example/content-sample",
+        author_name: "Duplicated legacy author",
+        content_article_id: shared.article.id,
+        content_snapshot_id: shared.snapshot.id,
+        content_type: "图文",
+        risk_level: "low"
+      }
+    });
+    expect(created.statusCode).toBe(200);
+    const sampleId = created.json<{ id: string }>().id;
+
+    const listed = await runtime.app.inject({
+      method: "GET",
+      url: "/api/incubation/content-samples?limit=200",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(listed.statusCode).toBe(200);
+    const sample = listed
+      .json<{ items: Array<Record<string, unknown>> }>()
+      .items.find((item) => item.id === sampleId);
+    const legacySample = listed
+      .json<{ items: Array<Record<string, unknown>> }>()
+      .items.find((item) => item.id === legacySampleId);
+
+    expect(sample).toMatchObject({
+      id: sampleId,
+      content_article_id: shared.article.id,
+      content_snapshot_id: shared.snapshot.id,
+      title: "A deterministic research article",
+      original_url: shared.article.canonical_url,
+      author_name: "Fixture Account"
+    });
+    expect(legacySample).toMatchObject({
+      id: legacySampleId,
+      content_article_id: null,
+      content_snapshot_id: null,
+      title: "Legacy-only content sample",
+      original_url: "https://legacy.example/unlinked-content-sample",
+      author_name: "Legacy sample author"
+    });
+  });
+
+  it("generates topic suggestions from shared facts for a linked Content Sample", async () => {
+    const submitted = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: ARTICLE_URL }
+    });
+    const shared = submitted.json<{ article: { id: string }; snapshot: { id: string } }>();
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Stale duplicated topic title",
+        content_article_id: shared.article.id,
+        content_snapshot_id: shared.snapshot.id,
+        is_viral: true,
+        risk_level: "low"
+      }
+    });
+    const sampleId = created.json<{ id: string }>().id;
+
+    const suggested = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/suggestions/topics",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { limit: 30, persist: false }
+    });
+    expect(suggested.statusCode).toBe(200);
+    const seed = suggested
+      .json<{ items: Array<{ title: string; source_trace: { content_sample_id?: string } }> }>()
+      .items.find((item) => item.source_trace.content_sample_id === sampleId);
+
+    expect(seed?.title).toContain("A deterministic research article");
+    expect(seed?.title).not.toContain("Stale duplicated topic title");
+  });
+
+  it("exports shared provenance and projected facts for a linked Content Sample", async () => {
+    const submitted = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: ARTICLE_URL }
+    });
+    const shared = submitted.json<{ article: { id: string }; snapshot: { id: string } }>();
+    await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Stale exported title",
+        content_article_id: shared.article.id,
+        content_snapshot_id: shared.snapshot.id,
+        risk_level: "low"
+      }
+    });
+
+    const exported = await runtime.app.inject({
+      method: "GET",
+      url: "/api/incubation/export/content-samples?format=csv",
+      headers: { authorization: `Bearer ${token}` }
+    });
+
+    expect(exported.statusCode).toBe(200);
+    expect(exported.body.split(/\r?\n/, 1)[0]).toContain("content_article_id,content_snapshot_id");
+    expect(exported.body).toContain(shared.article.id);
+    expect(exported.body).toContain(shared.snapshot.id);
+    expect(exported.body).toContain("A deterministic research article");
+    expect(exported.body).not.toContain("Stale exported title");
+  });
+
+  it("resolves linked Content Samples by shared facts when importing downstream comments", async () => {
+    const submitted = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: ARTICLE_URL }
+    });
+    const shared = submitted.json<{ article: { id: string }; snapshot: { id: string } }>();
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Stale comment relation title",
+        content_article_id: shared.article.id,
+        content_snapshot_id: shared.snapshot.id,
+        risk_level: "low"
+      }
+    });
+    const sampleId = created.json<{ id: string }>().id;
+
+    const imported = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/import/comments",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        content: `comment_text,source_content\n如何开始？,A deterministic research article`
+      }
+    });
+    expect(imported.statusCode).toBe(200);
+
+    const legacyAliasImported = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/import/comments",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        content: `comment_text,source_content\n旧表格还能导入吗？,Stale comment relation title`
+      }
+    });
+    expect(legacyAliasImported.statusCode).toBe(200);
+
+    const comments = await runtime.app.inject({
+      method: "GET",
+      url: "/api/incubation/comments?keyword=如何开始",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(comments.statusCode).toBe(200);
+    expect(comments.json<{ items: Array<{ content_sample_id: string }> }>().items).toContainEqual(
+      expect.objectContaining({ content_sample_id: sampleId })
+    );
+
+    const legacyAliasComments = await runtime.app.inject({
+      method: "GET",
+      url: "/api/incubation/comments?keyword=旧表格还能导入吗",
+      headers: { authorization: `Bearer ${token}` }
+    });
+    expect(legacyAliasComments.json<{ items: Array<{ content_sample_id: string }> }>().items).toContainEqual(
+      expect.objectContaining({ content_sample_id: sampleId })
+    );
+  });
+
+  it("rejects a Content Sample whose shared snapshot belongs to another article", async () => {
+    const first = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: ARTICLE_URL }
+    });
+    const second = await runtime.app.inject({
+      method: "POST",
+      url: "/api/content/articles/submit",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { url: SECOND_SHARED_ARTICLE_URL }
+    });
+    const firstShared = first.json<{ article: { id: string } }>();
+    const secondShared = second.json<{ snapshot: { id: string } }>();
+
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Invalid cross-article reference",
+        content_article_id: firstShared.article.id,
+        content_snapshot_id: secondShared.snapshot.id,
+        risk_level: "low"
+      }
+    });
+
+    expect(created.statusCode).toBe(409);
+    expect(created.json<{ error: string }>().error).toContain("共享文章与快照引用不一致");
+
+    const missingSnapshot = await runtime.app.inject({
+      method: "POST",
+      url: "/api/incubation/content-samples",
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        title: "Incomplete shared reference",
+        content_article_id: firstShared.article.id,
+        risk_level: "low"
+      }
+    });
+    expect(missingSnapshot.statusCode).toBe(409);
   });
 
   it("returns an explicit not-configured browser discovery result", async () => {

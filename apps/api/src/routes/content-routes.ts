@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-import type { ContentService } from "../content/service";
+import { ContentFetchError, type ContentService } from "../content/service";
 import type { ResearchService } from "../research/research-service";
 import { requireUser } from "./auth-guard";
 
@@ -30,9 +30,9 @@ export async function registerContentRoutes(
       reply.code(result.created ? 201 : 200);
       return result;
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("CONTENT_FETCH_FAILED:")) {
+      if (error instanceof ContentFetchError) {
         reply.code(422);
-        return { error: error.message.slice("CONTENT_FETCH_FAILED:".length) };
+        return { error: error.detail };
       }
       if (error instanceof Error && error.message === "CONTENT_TOMBSTONED") {
         reply.code(409);

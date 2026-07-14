@@ -80,12 +80,13 @@ export async function createServiceContainer(options: CreateApplicationOptions):
     const legacyContentMigrator = new LegacyContentMigrator(sql, contentRepo);
     const incubationRepo = new IncubationRepository(sql);
     const projectRepo = new ProjectRepository(sql);
+    const contentService = new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator);
     const services: ApplicationServices = {
       pipeline: new PipelineService(sessions, requests, adapters.analysisWorkflow),
       research: new ResearchService(researchRepo, options.env, adapters.publicWeb, contentRepo),
       incubation: new IncubationService(incubationRepo),
-      content: new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator),
-      projects: new ProjectService(projectRepo)
+      content: contentService,
+      projects: new ProjectService(projectRepo, contentService)
     };
 
     return {

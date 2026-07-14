@@ -4,6 +4,13 @@ import { ContentRepository } from "./repository";
 import { LegacyContentMigrator } from "./legacy-content-migrator";
 import { canonicalizeContentUrl, getWeChatSourceKey } from "./canonical-url";
 
+export class ContentFetchError extends Error {
+  constructor(public readonly detail: string) {
+    super(detail);
+    this.name = "ContentFetchError";
+  }
+}
+
 export class ContentService {
   constructor(
     public readonly repo: ContentRepository,
@@ -14,7 +21,7 @@ export class ContentService {
   async submitPublicArticle(url: string) {
     const page = await this.publicWeb.fetchPage(url);
     const failure = page.status >= 400 ? `HTTP ${page.status}` : detectFetchFailure(page.html, page.status);
-    if (failure) throw new Error(`CONTENT_FETCH_FAILED:${failure}`);
+    if (failure) throw new ContentFetchError(failure);
 
     const canonicalUrl = canonicalizeContentUrl(page.finalUrl || url);
     const snapshot = parseWeChatArticleHtml(page.html, canonicalUrl);

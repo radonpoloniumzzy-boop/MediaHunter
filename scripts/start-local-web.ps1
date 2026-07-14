@@ -4,4 +4,4 @@ $ErrorActionPreference = "Stop"
   "apps\web\node_modules\vite\bin\vite.js"
 )
 
-& $LocalNodeExe $LocalCorepack pnpm --filter @lan-ting/web dev
+& $PnpmExecutable @PnpmPrefix --filter @lan-ting/web dev

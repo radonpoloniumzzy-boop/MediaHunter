@@ -4,4 +4,4 @@ $ErrorActionPreference = "Stop"
   "apps\api\node_modules\tsx\dist\cli.mjs"
 )
 
-& $LocalNodeExe $LocalCorepack pnpm --filter @lan-ting/api dev
+& $PnpmExecutable @PnpmPrefix --filter @lan-ting/api dev
