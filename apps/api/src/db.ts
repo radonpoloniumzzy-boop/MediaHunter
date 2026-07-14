@@ -1,5 +1,7 @@
 import postgres, { type Sql } from "postgres";
 
+import { ContentRepository } from "./content/repository";
+import { LegacyContentMigrator } from "./content/legacy-content-migrator";
 import { hashPassword } from "./research/auth-utils";
 
 export async function createDatabaseConnection(databaseUrl: string): Promise<Sql> {
@@ -364,6 +366,99 @@ export async function ensureSchema(sql: Sql): Promise<void> {
       created_by text references users(id),
       unique(article_id, version)
     );
+
+    create table if not exists content_source (
+      id text primary key,
+      source_type text not null,
+      canonical_key text not null,
+      display_name text,
+      canonical_url text,
+      legacy_account_source_id text references account_source(id) on delete set null,
+      metadata jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      unique(source_type, canonical_key)
+    );
+
+    create table if not exists content_article (
+      id text primary key,
+      canonical_url text not null unique,
+      source_id text references content_source(id) on delete set null,
+      title text not null,
+      author text,
+      publish_time timestamptz,
+      current_snapshot_version integer not null default 0,
+      current_content_hash text,
+      status text not null default 'active',
+      first_seen_at timestamptz not null default now(),
+      last_seen_at timestamptz not null default now(),
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
+
+    create table if not exists content_snapshot (
+      id text primary key,
+      article_id text not null references content_article(id) on delete cascade,
+      version integer not null,
+      source_url text not null,
+      final_url text not null,
+      http_status integer,
+      title text not null,
+      author text,
+      publish_time timestamptz,
+      summary text,
+      cover_url text,
+      content_html text not null,
+      content_text text not null,
+      raw_json jsonb not null default '{}'::jsonb,
+      content_hash text not null,
+      origin text not null default 'public_fetch',
+      captured_at timestamptz not null default now(),
+      unique(article_id, version),
+      unique(article_id, content_hash)
+    );
+
+    create table if not exists content_image_reference (
+      id text primary key,
+      snapshot_id text not null references content_snapshot(id) on delete cascade,
+      reference_type text not null,
+      position integer not null,
+      url text not null,
+      alt_text text,
+      created_at timestamptz not null default now(),
+      unique(snapshot_id, reference_type, position, url)
+    );
+
+    create table if not exists content_legacy_article_link (
+      legacy_article_id text primary key references article(id) on delete cascade,
+      content_article_id text not null references content_article(id) on delete cascade,
+      migrated_at timestamptz not null default now()
+    );
+
+    create table if not exists content_legacy_snapshot_link (
+      legacy_snapshot_id text primary key references article_snapshot(id) on delete cascade,
+      content_snapshot_id text not null references content_snapshot(id) on delete cascade,
+      migrated_at timestamptz not null default now()
+    );
+
+    create table if not exists content_migration_run (
+      id text primary key,
+      migration_name text not null,
+      status text not null,
+      source_article_count integer not null default 0,
+      source_snapshot_count integer not null default 0,
+      migrated_article_count integer not null default 0,
+      migrated_snapshot_count integer not null default 0,
+      detail jsonb not null default '{}'::jsonb,
+      started_at timestamptz not null default now(),
+      completed_at timestamptz
+    );
+
+    create index if not exists idx_content_article_source on content_article(source_id, publish_time desc);
+    create index if not exists idx_content_article_hash on content_article(current_content_hash);
+    create index if not exists idx_content_snapshot_article on content_snapshot(article_id, version desc);
+    create index if not exists idx_content_snapshot_hash on content_snapshot(content_hash);
+    create index if not exists idx_content_image_snapshot on content_image_reference(snapshot_id, position);
 
     create table if not exists tag_dictionary (
       id text primary key,
@@ -760,4 +855,13 @@ export async function ensureSchema(sql: Sql): Promise<void> {
 
   await seedResearchDefaults(sql);
   await seedIncubationDefaults(sql);
+  const contentRepository = new ContentRepository(sql);
+  const legacyContentMigrator = new LegacyContentMigrator(sql, contentRepository);
+  const migrationReadiness = await legacyContentMigrator.getReadiness();
+  if (
+    migrationReadiness.legacy_article_count > migrationReadiness.linked_article_count ||
+    migrationReadiness.legacy_snapshot_count > migrationReadiness.linked_snapshot_count
+  ) {
+    await legacyContentMigrator.run();
+  }
 }

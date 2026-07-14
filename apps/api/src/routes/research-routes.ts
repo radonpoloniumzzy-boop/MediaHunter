@@ -1,39 +1,8 @@
-﻿import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+﻿import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
-import type { AuthUser } from "../research/types";
 import { ResearchService } from "../research/research-service";
-
-function getBearerToken(request: FastifyRequest): string | null {
-  const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) return null;
-  return header.slice("Bearer ".length).trim();
-}
-
-async function requireUser(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  service: ResearchService,
-  permission?: Parameters<ResearchService["assertPermission"]>[1]
-): Promise<AuthUser | null> {
-  const token = getBearerToken(request);
-  const user = await service.currentUserFromToken(token);
-  if (!user) {
-    reply.code(401);
-    return null;
-  }
-
-  if (permission) {
-    try {
-      service.assertPermission(user, permission);
-    } catch {
-      reply.code(403);
-      return null;
-    }
-  }
-
-  return user;
-}
+import { getBearerToken, requireUser } from "./auth-guard";
 
 function parseArticleIds(raw?: string) {
   return raw

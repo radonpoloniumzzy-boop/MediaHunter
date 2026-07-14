@@ -1,6 +1,9 @@
 import type { FastifyInstance } from "fastify";
 
 import { createApp } from "./app";
+import { ContentRepository } from "./content/repository";
+import { ContentService } from "./content/service";
+import { LegacyContentMigrator } from "./content/legacy-content-migrator";
 import { createDatabaseConnection, ensureSchema } from "./db";
 import type { AppEnv } from "./env";
 import {
@@ -29,6 +32,7 @@ export interface ApplicationServices {
   pipeline: PipelineService;
   research: ResearchService;
   incubation: IncubationService;
+  content: ContentService;
 }
 
 export interface ServiceContainer {
@@ -69,11 +73,14 @@ export async function createServiceContainer(options: CreateApplicationOptions):
     const sessions = new SessionRepository(sql);
     const requests = new RequestRepository(sql);
     const researchRepo = new ResearchRepository(sql);
+    const contentRepo = new ContentRepository(sql);
+    const legacyContentMigrator = new LegacyContentMigrator(sql, contentRepo);
     const incubationRepo = new IncubationRepository(sql);
     const services: ApplicationServices = {
       pipeline: new PipelineService(sessions, requests, adapters.analysisWorkflow),
       research: new ResearchService(researchRepo, options.env, adapters.publicWeb),
-      incubation: new IncubationService(incubationRepo)
+      incubation: new IncubationService(incubationRepo),
+      content: new ContentService(contentRepo, adapters.publicWeb, legacyContentMigrator)
     };
 
     return {
@@ -95,9 +102,13 @@ export async function createApplication(options: CreateApplicationOptions): Prom
   let app: FastifyInstance;
 
   try {
-    app = await createApp(container.services.pipeline, container.services.research, container.services.incubation, {
-      logger: options.logger ?? true
-    });
+    app = await createApp(
+      container.services.pipeline,
+      container.services.research,
+      container.services.incubation,
+      container.services.content,
+      { logger: options.logger ?? true }
+    );
     app.addHook("onClose", async () => {
       await container.close();
     });
