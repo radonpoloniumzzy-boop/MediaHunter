@@ -1,0 +1,26 @@
+{
+  "name": "lan-ting-base",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "dev:api": "pnpm --filter @lan-ting/api dev",
+    "dev:collector": "pnpm --filter @lan-ting/api worker",
+    "dev:web": "pnpm --filter @lan-ting/web dev",
+    "local:api": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-api.ps1",
+    "local:all": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-all.ps1",
+    "local:collector": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-collector.ps1",
+    "local:web": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-web.ps1",
+    "local:postgres": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-postgres.ps1",
+    "local:stop": "powershell -ExecutionPolicy Bypass -File ./scripts/stop-local-all.ps1",
+    "build": "corepack pnpm --filter @lan-ting/web build && corepack pnpm --filter @lan-ting/api typecheck && corepack pnpm --filter @lan-ting/workflow typecheck && corepack pnpm --filter @lan-ting/rag typecheck && corepack pnpm --filter @lan-ting/prompts typecheck",
+    "test": "vitest run",
+    "typecheck": "corepack pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.2",
+    "vitest": "^3.1.1"
+  }
+}

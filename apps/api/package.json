@@ -1,0 +1,26 @@
+{
+  "name": "@lan-ting/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "worker": "tsx src/collector-worker.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@lan-ting/prompts": "workspace:*",
+    "@lan-ting/rag": "workspace:*",
+    "@lan-ting/workflow": "workspace:*",
+    "dotenv": "^16.6.1",
+    "fastify": "^5.2.1",
+    "postgres": "^3.4.5",
+    "xlsx": "^0.18.5",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}
